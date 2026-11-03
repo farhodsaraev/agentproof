@@ -5,6 +5,7 @@ mod check;
 mod checks;
 mod hook;
 mod messages;
+mod report;
 mod store;
 mod time;
 mod transcript;
@@ -33,6 +34,11 @@ enum Command {
         /// Read the hook data from standard input.
         #[arg(long)]
         hook: bool,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Open the report of the latest check in the web browser.
+    Open {
         #[command(flatten)]
         target: Target,
     },
@@ -67,6 +73,7 @@ fn main() {
     let result = match cli.command {
         Command::Start { hook, target } => run_start(hook, target),
         Command::Check { hook, json, target } => run_check(hook, json, target),
+        Command::Open { target } => run_open(target),
     };
     if let Err(err) = result {
         // A failure must never stop the agent. Tell the user and exit normally.
@@ -111,17 +118,35 @@ fn run_start(hook: bool, target: Target) -> Result<()> {
 
 fn run_check(hook: bool, json: bool, target: Target) -> Result<()> {
     let input = resolve(hook, target)?;
-    let outcome = check::run(&input, !hook)?;
-    let Some(result) = outcome else {
-        // Nothing changed since the last check.
-        return Ok(());
-    };
+    let result = check::run(&input, !hook)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
-    } else if hook {
-        println!("{}", serde_json::json!({ "systemMessage": result.message }));
-    } else {
-        println!("{}", result.message);
+    } else if let Some(message) = &result.message {
+        if hook {
+            println!("{}", serde_json::json!({ "systemMessage": message }));
+        } else {
+            println!("{message}");
+        }
     }
+    Ok(())
+}
+
+fn run_open(target: Target) -> Result<()> {
+    let input = resolve(false, target)?;
+    let cwd = input.cwd.clone().unwrap_or_default();
+    let session = match input.session_id.clone() {
+        Some(s) => s,
+        None => store::latest_transcript(&cwd)?.0,
+    };
+    let path = store::session_dir(&cwd, &session)?.join("report.html");
+    if !path.exists() {
+        // Make the report first, without a message.
+        check::run(&input, false)?;
+    }
+    report::open(&path)?;
+    println!(
+        "{}",
+        messages::report_opened(&path.to_string_lossy().replace('\\', "/"))
+    );
     Ok(())
 }

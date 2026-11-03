@@ -75,7 +75,7 @@ pub struct Finding {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     DontTrust,
@@ -921,10 +921,17 @@ fn named_paths(s: &Session, root: &Path) -> Vec<String> {
     named
 }
 
-fn outside_request(s: &Session, diffs: &[FileDiff], root: &Path, out: &mut Vec<Finding>) {
+/// The changed files outside the folders that the request named, and those
+/// folders. None if the request named no paths, because then there is nothing
+/// to compare.
+pub fn outside_request_files<'a>(
+    s: &Session,
+    diffs: &'a [FileDiff],
+    root: &Path,
+) -> Option<(Vec<&'a FileDiff>, Vec<String>)> {
     let named = named_paths(s, root);
     if named.is_empty() {
-        return; // The request named no paths, so there is nothing to compare.
+        return None;
     }
     // A named file allows its folder. A named folder allows everything in it.
     let allowed: Vec<String> = named
@@ -943,13 +950,20 @@ fn outside_request(s: &Session, diffs: &[FileDiff], root: &Path, out: &mut Vec<F
                 || !a.is_empty() && (path == a || path.starts_with(&format!("{a}/")))
         }) || named.iter().any(|n| n == path)
     };
-    let outside: Vec<&FileDiff> = diffs.iter().filter(|d| !inside(&d.path)).collect();
+    let outside = diffs.iter().filter(|d| !inside(&d.path)).collect();
+    let mut folders: Vec<String> = allowed
+        .iter()
+        .map(|a| if a.is_empty() { ".".into() } else { a.clone() })
+        .collect();
+    folders.dedup();
+    Some((outside, folders))
+}
+
+fn outside_request(s: &Session, diffs: &[FileDiff], root: &Path, out: &mut Vec<Finding>) {
+    let Some((outside, folders)) = outside_request_files(s, diffs, root) else {
+        return;
+    };
     if let Some(first) = outside.first() {
-        let mut folders: Vec<String> = allowed
-            .iter()
-            .map(|a| if a.is_empty() { ".".into() } else { a.clone() })
-            .collect();
-        folders.dedup();
         let evidence = outside
             .iter()
             .take(5)

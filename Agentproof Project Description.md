@@ -4,7 +4,7 @@ Nov 3, 2026 · @Farhod
 
 Name: Agentproof (chosen Nov 3, 2026; free on crates.io). Domains, plugin marketplaces and trademarks are not checked yet.
 
-Status: milestone 2 is done (Nov 3, 2026). Agentproof runs all ten rule checks and gives a verdict. The macOS build from milestone 1 is not done.
+Status: milestone 3 is done (Nov 3, 2026). Agentproof gives a short verdict in the app and writes a full HTML report. The macOS build from milestone 1 is not done.
 
 ## Overview
 
@@ -336,3 +336,19 @@ Facts found during milestone 2:
 - The first run of a new engine build on Windows took 13 seconds. The next runs took 1.5 seconds. A security scan of the new file is the probable cause.
 - Agentproof reported the recursive deletes of this development session correctly. Deletes of temporary folders are still reported. A list of safe folders (for example `node_modules` and `target`) prevents some alarms. More safe targets are a possible later change.
 - When the agent changed a file that already had changes before the session, the line checks also see the earlier changes in that file. The start point stores only a content id, not the old text.
+
+## Milestone 3 progress
+
+Updated Nov 3, 2026.
+
+| Item | Status |
+| --- | --- |
+| Full HTML report: one file, no external requests, light and dark mode | Done. Sections: verdict, summary, what to verify, red flags, claimed and done, blast radius, what happened |
+| Evidence in the report: changed lines around each file finding, and the command with its error for each transcript finding | Done |
+| All text from the transcript and the repository is escaped in the report | Done. Tested with HTML in a prompt and in a message |
+| Short message shows only new findings | Done. A finding that a message showed before does not come again. A manual check shows all findings |
+| No message when there are no new findings and the verdict did not change | Done |
+| Shorter message: verdict, up to three findings, report path | Done |
+| `/agentproof:report` command that opens the report in the web browser | Done. Not tested in the app yet |
+| "Claimed and done" with the AI check | Not started. Milestone 4. The section now shows the final message and the test facts from the transcript |
+| Blast radius grouped by intent | Not started. It needs the AI check. The table now marks test files, sensitive files and files outside the request |

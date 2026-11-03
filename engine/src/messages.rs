@@ -4,20 +4,24 @@
 
 use crate::checks::{Area, Danger, Finding, Rule, Severity, Verdict};
 
-/// The number of findings in the short message. All findings are in the JSON file.
+/// The number of findings in the short message. All findings are in the report.
 const SHOWN_FINDINGS: usize = 3;
 
 pub struct Summary<'a> {
     pub verdict: Verdict,
+    /// All findings, for the counts.
     pub findings: &'a [Finding],
-    pub files: usize,
-    pub commands: usize,
+    /// The findings that this message can show, most severe first.
+    pub shown: &'a [&'a Finding],
+    /// True if `shown` has only the findings that are new since the last message.
+    pub only_new: bool,
     pub no_start: bool,
     pub no_git: bool,
     pub no_transcript: bool,
-    pub data_path: &'a str,
+    pub report_path: &'a str,
 }
 
+/// The short message in Claude Code.
 pub fn summary(s: &Summary) -> String {
     let mut out = vec![verdict_text(s.verdict, s.findings)];
     if s.no_git {
@@ -29,70 +33,78 @@ pub fn summary(s: &Summary) -> String {
     if s.no_transcript {
         out.push("Agentproof cannot read the session transcript.".into());
     }
-    if !s.no_git && !s.no_transcript {
-        out.push(format!(
-            "The agent changed {} and ran {}.",
-            count(s.files, "file", "files"),
-            count(s.commands, "command", "commands"),
-        ));
-    }
 
     // Show Low findings only when there is nothing more important.
     let important: Vec<&Finding> = s
-        .findings
+        .shown
         .iter()
+        .copied()
         .filter(|f| f.severity <= Severity::Medium)
         .collect();
-    let shown: Vec<&Finding> = if important.is_empty() {
-        s.findings.iter().take(SHOWN_FINDINGS).collect()
+    let list = if important.is_empty() {
+        s.shown.to_vec()
     } else {
-        important.into_iter().take(SHOWN_FINDINGS).collect()
+        important
     };
-    for f in &shown {
+    for (i, f) in list.iter().take(SHOWN_FINDINGS).enumerate() {
+        let new = if s.only_new && i == 0 { "New. " } else { "" };
         out.push(format!(
-            "{}: {} {}",
+            "{new}{}: {}",
             severity_text(f.severity),
-            f.text,
-            location(f)
+            with_location(f)
         ));
     }
-    let more = s.findings.len() - shown.len();
-    if more > 0 {
+    if s.findings.len() > SHOWN_FINDINGS.min(list.len()) {
         out.push(format!(
-            "The full data has {more} more {}.",
-            if more == 1 { "finding" } else { "findings" }
+            "The report has all {}.",
+            count(s.findings.len(), "finding", "findings")
         ));
     }
 
     if s.no_start && !s.no_git {
-        out.push("Agentproof did not find the start point. Thus it compared the changes with the last commit only.".into());
-    }
-    if s.verdict == Verdict::NoRedFlags {
         out.push(
-            "This verdict uses rule checks only. It does not prove that the work is correct."
+            "There is no start point for this session. Thus Agentproof used the last commit."
                 .into(),
         );
     }
-    out.push(format!("The full data is in {}.", s.data_path));
+    if s.verdict == Verdict::NoRedFlags {
+        out.push("This result uses rule checks only.".into());
+    }
+    out.push(format!("Report: {}", s.report_path));
     out.join(" ")
 }
 
-fn verdict_text(v: Verdict, findings: &[Finding]) -> String {
+pub fn verdict_text(v: Verdict, findings: &[Finding]) -> String {
+    format!("Agentproof: {}.", verdict_title(v, findings))
+}
+
+/// The verdict in a few words, for the message and the report.
+pub fn verdict_title(v: Verdict, findings: &[Finding]) -> String {
     match v {
-        Verdict::DontTrust => "Agentproof verdict: do not trust this work.".into(),
+        Verdict::DontTrust => "do not trust this work".into(),
         Verdict::Check => {
             let n = findings
                 .iter()
                 .filter(|f| f.severity <= Severity::Medium)
                 .count();
-            format!("Agentproof verdict: examine {}.", count(n, "item", "items"))
+            format!("examine {}", count(n, "item", "items"))
         }
-        Verdict::NoRedFlags => "Agentproof verdict: no red flags found.".into(),
-        Verdict::Incomplete => "Agentproof verdict: incomplete. Some checks did not run.".into(),
+        Verdict::NoRedFlags => "no red flags found".into(),
+        Verdict::Incomplete => "incomplete, because some checks did not run".into(),
     }
 }
 
-fn severity_text(s: Severity) -> &'static str {
+/// One sentence that explains the verdict, for the report.
+pub fn verdict_explanation(v: Verdict) -> &'static str {
+    match v {
+        Verdict::DontTrust => "Agentproof found a critical problem. Do not accept this work before you examine the critical findings.",
+        Verdict::Check => "Agentproof found items that need your attention. Examine each item before you accept the work.",
+        Verdict::NoRedFlags => "The rule checks found no problems. This does not prove that the work is correct, because there is no AI check yet.",
+        Verdict::Incomplete => "Agentproof could not read the transcript or the changes. Thus some checks did not run.",
+    }
+}
+
+pub fn severity_text(s: Severity) -> &'static str {
     match s {
         Severity::Critical => "Critical",
         Severity::High => "High",
@@ -101,12 +113,22 @@ fn severity_text(s: Severity) -> &'static str {
     }
 }
 
-fn location(f: &Finding) -> String {
+/// A short location in parentheses, for the message.
+/// The finding text with its location in parentheses before the full stop.
+fn with_location(f: &Finding) -> String {
+    match location_text(f) {
+        Some(l) => format!("{} ({l}).", f.text.trim_end_matches('.')),
+        None => f.text.clone(),
+    }
+}
+
+/// The location of a finding, without punctuation.
+pub fn location_text(f: &Finding) -> Option<String> {
     match (&f.file, f.line, f.transcript_line) {
-        (Some(file), Some(line), _) if line > 0 => format!("Location: {file}, line {line}."),
-        (Some(file), _, _) => format!("Location: {file}."),
-        (None, _, Some(t)) => format!("Location: transcript line {t}."),
-        _ => String::new(),
+        (Some(file), Some(line), _) if line > 0 => Some(format!("{file}, line {line}")),
+        (Some(file), _, _) => Some(file.clone()),
+        (None, _, Some(t)) => Some(format!("transcript line {t}")),
+        _ => None,
     }
 }
 
@@ -173,7 +195,7 @@ fn danger_text(d: Danger) -> &'static str {
     }
 }
 
-fn area_text(a: Area) -> &'static str {
+pub fn area_text(a: Area) -> &'static str {
     match a {
         Area::Authentication => "authentication",
         Area::Payments => "payments",
@@ -188,17 +210,36 @@ pub fn engine_error(reason: &str) -> String {
     format!("Agentproof cannot examine this session. The reason is: {reason}")
 }
 
-fn count(n: usize, one: &str, many: &str) -> String {
+pub fn report_opened(path: &str) -> String {
+    format!("Agentproof opened the report in your web browser. The report is in {path}.")
+}
+
+pub fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// Fixed sentences in the report. They are here so that the tests examine them.
+pub mod report_text {
+    pub const RULES_ONLY: &str = "This report uses rule checks only. Rule checks find facts in the transcript and in the changes, without AI.";
+    pub const NO_AI: &str = "This section needs the AI check. The AI check comes in a later version. Until then, compare the claim with the evidence yourself.";
+    pub const NO_FINDINGS: &str = "The rule checks found no problems.";
+    pub const NOTHING_TO_VERIFY: &str =
+        "Agentproof found no item that needs extra attention. Examine the changes as usual.";
+    pub const NO_START: &str = "There is no start point for this session. Thus Agentproof compared the changes with the last commit only.";
+    pub const NO_CHANGES: &str = "The agent did not change files in the repository.";
+    pub const BEFORE_SESSION: &str = "These files had changes before the session. Agentproof does not count them as work of the agent.";
+    pub const NOT_IN_REQUEST: &str = "not in the request";
+    pub const LOCAL_ONLY: &str =
+        "Agentproof made this report on your computer. It sent no data to a server.";
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const MAX_WORDS: usize = 25;
 
-    fn assert_ste(text: &str) {
+    pub(crate) fn assert_ste(text: &str) {
         for sentence in text.split(". ").map(|s| s.trim_end_matches('.')) {
             let words = sentence.split_whitespace().count();
             assert!(
@@ -271,16 +312,20 @@ mod tests {
         }
     }
 
-    fn sample<'a>(findings: &'a [Finding], verdict: Verdict) -> Summary<'a> {
+    fn sample<'a>(
+        findings: &'a [Finding],
+        shown: &'a [&'a Finding],
+        verdict: Verdict,
+    ) -> Summary<'a> {
         Summary {
             verdict,
             findings,
-            files: 1,
-            commands: 3,
+            shown,
+            only_new: false,
             no_start: true,
             no_git: false,
             no_transcript: false,
-            data_path: "C:/Users/x/.agentproof/p/s/check.json",
+            report_path: "C:/Users/x/.agentproof/p/s/report.html",
         }
     }
 
@@ -288,13 +333,37 @@ mod tests {
     fn every_finding_text_follows_ste100_length_limits() {
         for rule in all_rules() {
             let f = finding(rule, Severity::High);
-            assert_ste(&format!(
-                "{}: {} {}",
-                severity_text(f.severity),
-                f.text,
-                location(&f)
-            ));
+            let line = format!("{}: {}", severity_text(f.severity), with_location(&f));
+            assert!(!line.contains(". ("), "{line}");
+            assert_ste(&line);
         }
+    }
+
+    #[test]
+    fn every_fixed_text_follows_ste100_length_limits() {
+        use report_text::*;
+        for t in [
+            RULES_ONLY,
+            NO_AI,
+            NO_FINDINGS,
+            NOTHING_TO_VERIFY,
+            NO_START,
+            NO_CHANGES,
+            BEFORE_SESSION,
+            LOCAL_ONLY,
+        ] {
+            assert_ste(t);
+        }
+        for v in [
+            Verdict::DontTrust,
+            Verdict::Check,
+            Verdict::NoRedFlags,
+            Verdict::Incomplete,
+        ] {
+            assert_ste(verdict_explanation(v));
+        }
+        assert_ste(&engine_error("git diff failed"));
+        assert_ste(&report_opened("C:/x/report.html"));
     }
 
     #[test]
@@ -303,41 +372,65 @@ mod tests {
             .into_iter()
             .map(|r| finding(r, Severity::Medium))
             .collect();
+        let shown: Vec<&Finding> = findings.iter().collect();
         for v in [
             Verdict::DontTrust,
             Verdict::Check,
             Verdict::NoRedFlags,
             Verdict::Incomplete,
         ] {
-            assert_ste(&summary(&sample(&findings, v)));
+            assert_ste(&summary(&sample(&findings, &shown, v)));
             assert_ste(&summary(&Summary {
                 no_git: true,
                 no_transcript: true,
-                ..sample(&[], v)
+                ..sample(&[], &[], v)
             }));
         }
-        assert_ste(&engine_error("git diff failed"));
     }
 
     #[test]
-    fn summary_shows_the_top_three_and_counts_the_rest() {
+    fn summary_shows_the_top_three_and_points_to_the_report() {
         let findings: Vec<Finding> = (0..5)
             .map(|_| finding(Rule::DependenciesChanged, Severity::Medium))
             .collect();
-        let text = summary(&sample(&findings, Verdict::Check));
-        assert!(
-            text.starts_with("Agentproof verdict: examine 5 items."),
-            "{text}"
-        );
+        let shown: Vec<&Finding> = findings.iter().collect();
+        let text = summary(&sample(&findings, &shown, Verdict::Check));
+        assert!(text.starts_with("Agentproof: examine 5 items."), "{text}");
         assert_eq!(
-            text.matches("Medium: The agent changed the dependencies.")
+            text.matches("Medium: The agent changed the dependencies (")
                 .count(),
             3
         );
+        assert!(text.contains("The report has all 5 findings."), "{text}");
         assert!(
-            text.contains("The full data has 2 more findings."),
+            text.ends_with("Report: C:/Users/x/.agentproof/p/s/report.html"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn new_findings_are_marked_and_old_ones_are_not_repeated() {
+        let findings = [
+            finding(
+                Rule::DangerousCommand {
+                    kind: Danger::ForcePush,
+                },
+                Severity::Critical,
+            ),
+            finding(Rule::DependenciesChanged, Severity::Medium),
+        ];
+        let shown = [&findings[1]];
+        let text = summary(&Summary {
+            only_new: true,
+            no_start: false,
+            ..sample(&findings, &shown, Verdict::DontTrust)
+        });
+        assert!(
+            text.contains("New. Medium: The agent changed the dependencies (src/auth/session_store.ts, line 120)."),
+            "{text}"
+        );
+        assert!(!text.contains("force push"), "{text}");
+        assert!(text.contains("The report has all 2 findings."), "{text}");
     }
 
     #[test]
@@ -346,16 +439,16 @@ mod tests {
             finding(Rule::DependenciesChanged, Severity::Medium),
             finding(Rule::RepeatedError { count: 3 }, Severity::Low),
         ];
-        let text = summary(&sample(&findings, Verdict::Check));
+        let shown: Vec<&Finding> = findings.iter().collect();
+        let text = summary(&sample(&findings, &shown, Verdict::Check));
         assert!(!text.contains("Low:"), "{text}");
-        assert!(text.contains("1 more finding."), "{text}");
     }
 
     #[test]
     fn no_red_flags_is_never_called_safe() {
-        let text = summary(&sample(&[], Verdict::NoRedFlags));
+        let text = summary(&sample(&[], &[], Verdict::NoRedFlags));
         assert!(text.contains("no red flags found"));
-        assert!(text.contains("does not prove that the work is correct"));
+        assert!(text.contains("rule checks only"));
         assert!(!text.to_lowercase().contains("safe"));
     }
 }

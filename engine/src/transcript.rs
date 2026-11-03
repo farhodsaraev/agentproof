@@ -30,6 +30,30 @@ pub struct Session {
     pub ignored_lines: usize,
     /// Lines that are not valid JSON.
     pub bad_lines: usize,
+    /// All steps in order. Not in the JSON file, because the report shows them.
+    #[serde(skip)]
+    pub events: Vec<Event>,
+}
+
+/// One step of the session, for the timeline in the report.
+#[derive(Debug, Clone)]
+pub struct Event {
+    pub line: usize,
+    pub at: Option<i64>,
+    pub kind: EventKind,
+    /// Shortened text: the prompt, the message, the command or the tool input.
+    pub text: String,
+    /// For commands: true if the command failed.
+    pub failed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Prompt,
+    Message,
+    Command,
+    Edit,
+    Tool,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,8 +98,8 @@ const FILE_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 pub fn parse(raw: &str) -> Session {
     let mut s = Session::default();
-    // Tool call id -> index in `s.commands`.
-    let mut pending: BTreeMap<String, usize> = BTreeMap::new();
+    // Tool call id -> index in `s.commands` and in `s.events`.
+    let mut pending: BTreeMap<String, (usize, usize)> = BTreeMap::new();
 
     for (i, line) in raw.lines().enumerate() {
         let line_no = i + 1;
@@ -91,11 +115,11 @@ pub fn parse(raw: &str) -> Session {
             s.ignored_lines += 1;
             continue;
         }
-        if let Some(t) = entry
+        let at = entry
             .get("timestamp")
             .and_then(Value::as_str)
-            .and_then(parse_rfc3339)
-        {
+            .and_then(parse_rfc3339);
+        if let Some(t) = at {
             s.started_at.get_or_insert(t);
             s.ended_at = Some(t);
         }
@@ -114,6 +138,7 @@ pub fn parse(raw: &str) -> Session {
                             if let Some(t) = block.get("text").and_then(Value::as_str) {
                                 s.final_message = Some(t.to_string());
                                 s.final_message_line = Some(line_no);
+                                push_event(&mut s, line_no, at, EventKind::Message, t);
                             }
                         }
                     }
@@ -127,8 +152,9 @@ pub fn parse(raw: &str) -> Session {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
+                            let ev = push_event(&mut s, line_no, at, EventKind::Command, &command);
                             if let Some(id) = block.get("id").and_then(Value::as_str) {
-                                pending.insert(id.to_string(), s.commands.len());
+                                pending.insert(id.to_string(), (s.commands.len(), ev));
                             }
                             s.commands.push(CommandRun {
                                 line: line_no,
@@ -143,10 +169,41 @@ pub fn parse(raw: &str) -> Session {
                                 .and_then(|i| i.get("file_path").or_else(|| i.get("notebook_path")))
                                 .and_then(Value::as_str);
                             if let Some(p) = path {
+                                push_event(
+                                    &mut s,
+                                    line_no,
+                                    at,
+                                    EventKind::Edit,
+                                    &format!("{name} {p}"),
+                                );
                                 if !s.files_edited.iter().any(|f| f == p) {
                                     s.files_edited.push(p.to_string());
                                 }
                             }
+                        } else {
+                            // Other tools: show the name and the main input.
+                            let detail = input
+                                .and_then(|i| {
+                                    [
+                                        "file_path",
+                                        "path",
+                                        "pattern",
+                                        "url",
+                                        "query",
+                                        "description",
+                                        "skill",
+                                    ]
+                                    .iter()
+                                    .find_map(|k| i.get(*k).and_then(Value::as_str))
+                                })
+                                .unwrap_or("");
+                            push_event(
+                                &mut s,
+                                line_no,
+                                at,
+                                EventKind::Tool,
+                                &format!("{name} {detail}"),
+                            );
                         }
                     }
                     _ => {}
@@ -158,6 +215,7 @@ pub fn parse(raw: &str) -> Session {
         // A user entry is a typed prompt or a tool result.
         if let Some(text) = content.and_then(Value::as_str) {
             if is_typed_prompt(&entry, text, sidechain) {
+                push_event(&mut s, line_no, at, EventKind::Prompt, text);
                 s.prompts.push(Prompt {
                     line: line_no,
                     text: text.to_string(),
@@ -172,11 +230,12 @@ pub fn parse(raw: &str) -> Session {
                         .get("tool_use_id")
                         .and_then(Value::as_str)
                         .unwrap_or("");
-                    if let Some(&idx) = pending.get(id) {
+                    if let Some(&(idx, ev)) = pending.get(id) {
                         let is_error = block
                             .get("is_error")
                             .and_then(Value::as_bool)
                             .unwrap_or(false);
+                        s.events[ev].failed = Some(is_error);
                         let cmd = &mut s.commands[idx];
                         cmd.failed = Some(is_error);
                         if is_error {
@@ -191,6 +250,7 @@ pub fn parse(raw: &str) -> Session {
                 Some("text") => {
                     if let Some(text) = block.get("text").and_then(Value::as_str) {
                         if is_typed_prompt(&entry, text, sidechain) {
+                            push_event(&mut s, line_no, at, EventKind::Prompt, text);
                             s.prompts.push(Prompt {
                                 line: line_no,
                                 text: text.to_string(),
@@ -203,6 +263,19 @@ pub fn parse(raw: &str) -> Session {
         }
     }
     s
+}
+
+const EVENT_TEXT_MAX: usize = 400;
+
+fn push_event(s: &mut Session, line: usize, at: Option<i64>, kind: EventKind, text: &str) -> usize {
+    s.events.push(Event {
+        line,
+        at,
+        kind,
+        text: text.trim().chars().take(EVENT_TEXT_MAX).collect(),
+        failed: None,
+    });
+    s.events.len() - 1
 }
 
 fn blocks(content: Option<&Value>) -> impl Iterator<Item = &Value> {
