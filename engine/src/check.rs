@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::changes::{self, Changes, Origin, StartPoint};
+use crate::changes::{self, Changes, StartPoint};
+use crate::checks::{self, Finding, Verdict};
 use crate::hook::HookInput;
 use crate::messages;
 use crate::store;
@@ -35,10 +36,13 @@ pub struct CheckResult {
     pub start_point_found: bool,
     pub start_point: Option<StartPoint>,
     pub session_duration_secs: Option<i64>,
+    pub failed_commands: usize,
+    /// Lines of the session files only.
+    pub lines_added_and_deleted: (u64, u64),
     pub session: Option<Session>,
     pub changes: Option<Changes>,
-    /// Rule checks come in milestone 2. Until then there is no verdict.
-    pub verdict: &'static str,
+    pub verdict: Verdict,
+    pub findings: Vec<Finding>,
     pub notes: Vec<String>,
     pub message: String,
 }
@@ -94,10 +98,30 @@ pub fn run(input: &HookInput, force: bool) -> Result<Option<CheckResult>> {
         }
     };
     let changes = start.as_ref().map(changes::since).transpose()?;
+    let diffs = match (&start, &changes) {
+        (Some(s), Some(c)) => changes::line_diffs(s, c)?,
+        _ => Vec::new(),
+    };
 
-    let fingerprint = changes
-        .as_ref()
-        .map_or_else(|| "no-git".to_string(), |c| c.fingerprint.clone());
+    let mut findings = checks::evaluate(&checks::Input {
+        session: session.as_ref(),
+        diffs: &diffs,
+        root: start.as_ref().map(|s| s.repo_root.as_path()),
+    });
+    for f in &mut findings {
+        f.text = messages::finding_text(&f.rule);
+    }
+    let complete = session.is_some() && changes.is_some();
+    let verdict = checks::verdict(&findings, complete);
+
+    // A new message only when the changes or the findings are new.
+    let fingerprint = format!(
+        "{}:{}",
+        changes
+            .as_ref()
+            .map_or("no-git", |c| c.fingerprint.as_str()),
+        changes::hash_hex(serde_json::to_string(&findings)?.as_bytes())
+    );
     let last: LastCheck = store::load(&dir.join("last.json"))?.unwrap_or_default();
     let session_files = changes.as_ref().map_or(0, |c| c.session_files().count());
     store::save(
@@ -106,24 +130,17 @@ pub fn run(input: &HookInput, force: bool) -> Result<Option<CheckResult>> {
             fingerprint: fingerprint.clone(),
         },
     )?;
-    if !force && (last.fingerprint == fingerprint || (changes.is_some() && session_files == 0)) {
+    let nothing_to_say = changes.is_some() && session_files == 0 && findings.is_empty();
+    if !force && (last.fingerprint == fingerprint || nothing_to_say) {
         return Ok(None);
     }
 
     let data_path = dir.join("check.json");
-    let (added, deleted) = changes.as_ref().map_or((0, 0), Changes::session_lines);
     let message = messages::summary(&messages::Summary {
+        verdict,
+        findings: &findings,
         files: session_files,
-        added,
-        deleted,
         commands: session.as_ref().map_or(0, |s| s.commands.len()),
-        failed: session.as_ref().map_or(0, Session::failed_commands),
-        before_session: changes.as_ref().map_or(0, |c| {
-            c.files
-                .iter()
-                .filter(|f| f.origin == Origin::BeforeSession)
-                .count()
-        }),
         no_start: !start_point_found,
         no_git: changes.is_none(),
         no_transcript: session.is_none(),
@@ -139,9 +156,12 @@ pub fn run(input: &HookInput, force: bool) -> Result<Option<CheckResult>> {
         start_point_found,
         start_point: start,
         session_duration_secs: session.as_ref().and_then(Session::duration_secs),
+        failed_commands: session.as_ref().map_or(0, Session::failed_commands),
+        lines_added_and_deleted: changes.as_ref().map_or((0, 0), Changes::session_lines),
         session,
         changes,
-        verdict: "not_available",
+        verdict,
+        findings,
         notes,
         message,
     };

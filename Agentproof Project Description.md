@@ -4,7 +4,7 @@ Nov 3, 2026 · @Farhod
 
 Name: Agentproof (chosen Nov 3, 2026; free on crates.io). Domains, plugin marketplaces and trademarks are not checked yet.
 
-Status: milestone 1 is done (Nov 3, 2026), except the macOS build. The plugin operates in the real Claude desktop app on Windows.
+Status: milestone 2 is done (Nov 3, 2026). Agentproof runs all ten rule checks and gives a verdict. The macOS build from milestone 1 is not done.
 
 ## Overview
 
@@ -313,3 +313,26 @@ Facts found during milestone 1:
 - The desktop app has no button to add a local plugin folder, and its plugin screens do not list a local plugin. The working method is two entries in `~/.claude/settings.json`: `extraKnownMarketplaces` (source type `directory`) and `enabledPlugins` (`"agentproof@agentproof": true`).
 - The in-app message is a "Claude Code notice" under the last reply of the agent, with the prefix "Stop says:". The message of milestone 1 is long (approximately 60 words). The report of milestone 3 must make it shorter: the verdict and the top findings only.
 - In the app test, the engine correctly kept 24 files with earlier changes apart from the 1 file that the agent made.
+
+## Milestone 2 progress
+
+Updated Nov 3, 2026.
+
+| Item | Status |
+| --- | --- |
+| All ten rule checks from the "Checks" section | Done. Each check has its own tests |
+| Verdict: "do not trust this work", "examine N items", "no red flags found", "incomplete" | Done. Without the AI check, the best verdict is "no red flags found", never "safe" |
+| Short message with the verdict and the top three findings | Done. Low findings show only when there is nothing more important |
+| Full findings in the JSON file, each with a location and evidence | Done |
+| "Bad agent" session: failed tests with a claim that they pass, a force push, a skipped test, a new dependency, sensitive files, a suppression, a repeated error, a file outside the request | Done. All are caught, and the verdict is "do not trust this work" |
+| "Good agent" session: a failed test that the agent fixed, then a pass | Done. No findings |
+| Test on this real session | Done. 1.5 seconds. Three true findings (recursive deletes of temporary folders) and no false alarms |
+| `.agentproof.toml` settings for thresholds | Not started. The thresholds are fixed values in the code |
+
+Facts found during milestone 2:
+
+- On Windows, a check of a path that starts with `//` opens a network connection, and it can take 40 seconds. A web link in a prompt caused this. The engine now examines only relative paths in prompts.
+- Marker text inside a string, for example a list of markers in a checker, is not a real marker. The engine now ignores markers inside double-quoted strings, and it requires attributes such as `#[ignore]` at the start of the line.
+- The first run of a new engine build on Windows took 13 seconds. The next runs took 1.5 seconds. A security scan of the new file is the probable cause.
+- Agentproof reported the recursive deletes of this development session correctly. Deletes of temporary folders are still reported. A list of safe folders (for example `node_modules` and `target`) prevents some alarms. More safe targets are a possible later change.
+- When the agent changed a file that already had changes before the session, the line checks also see the earlier changes in that file. The start point stores only a content id, not the old text.

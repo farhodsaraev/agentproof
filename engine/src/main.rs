@@ -2,6 +2,7 @@
 
 mod changes;
 mod check;
+mod checks;
 mod hook;
 mod messages;
 mod store;

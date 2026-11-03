@@ -254,6 +254,122 @@ pub fn since(start: &StartPoint) -> Result<Changes> {
     })
 }
 
+/// The added and removed lines of one file.
+#[derive(Debug, Default)]
+pub struct FileDiff {
+    pub path: String,
+    pub status: char,
+    /// (line number in the new file, text)
+    pub added: Vec<(u32, String)>,
+    /// (line number in the old file, text)
+    pub removed: Vec<(u32, String)>,
+}
+
+/// Line changes of the files that changed during the session.
+pub fn line_diffs(start: &StartPoint, changes: &Changes) -> Result<Vec<FileDiff>> {
+    let root = &start.repo_root;
+    let raw = git(
+        root,
+        &[
+            "-c",
+            "core.quotepath=off",
+            "diff",
+            "--no-renames",
+            "--no-color",
+            "--no-ext-diff",
+            "-U0",
+            &changes.base,
+        ],
+    )?;
+    let mut diffs = parse_unified(&String::from_utf8_lossy(&raw));
+
+    // Untracked files are not in `git diff`: all their lines are added.
+    for f in changes.files.iter().filter(|f| f.status == 'A') {
+        if diffs.iter().any(|d| d.path == f.path) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(&f.path)) else {
+            continue;
+        };
+        let added = text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i as u32 + 1, l.to_string()))
+            .collect();
+        diffs.push(FileDiff {
+            path: f.path.clone(),
+            status: 'A',
+            added,
+            removed: Vec::new(),
+        });
+    }
+
+    let session: Vec<&str> = changes.session_files().map(|f| f.path.as_str()).collect();
+    diffs.retain(|d| session.contains(&d.path.as_str()));
+    for d in &mut diffs {
+        if let Some(f) = changes.files.iter().find(|f| f.path == d.path) {
+            d.status = f.status;
+        }
+    }
+    Ok(diffs)
+}
+
+/// Parse `git diff -U0` output.
+fn parse_unified(text: &str) -> Vec<FileDiff> {
+    let mut out: Vec<FileDiff> = Vec::new();
+    let (mut old_line, mut new_line) = (0u32, 0u32);
+    let mut old_path = String::new();
+    // `---` and `+++` are headers only before the first hunk of a file.
+    let mut in_header = false;
+    for raw in text.lines() {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.starts_with("diff --git ") {
+            in_header = true;
+            out.push(FileDiff {
+                status: 'M',
+                ..FileDiff::default()
+            });
+        } else if let (true, Some(p)) = (in_header, line.strip_prefix("--- ")) {
+            old_path = p.strip_prefix("a/").unwrap_or(p).to_string();
+        } else if let (true, Some(p)) = (in_header, line.strip_prefix("+++ ")) {
+            if let Some(d) = out.last_mut() {
+                d.path = if p == "/dev/null" {
+                    old_path.clone()
+                } else {
+                    p.strip_prefix("b/").unwrap_or(p).to_string()
+                };
+            }
+        } else if let Some(h) = line.strip_prefix("@@ ") {
+            in_header = false;
+            // @@ -old[,n] +new[,n] @@
+            let mut parts = h.split_whitespace();
+            let start = |s: Option<&str>| {
+                s.and_then(|s| s[1..].split(',').next()?.parse::<u32>().ok())
+                    .unwrap_or(0)
+            };
+            old_line = start(parts.next());
+            new_line = start(parts.next());
+        } else if let Some(d) = out.last_mut() {
+            if let Some(t) = line.strip_prefix('+') {
+                d.added.push((new_line, t.to_string()));
+                new_line += 1;
+            } else if let Some(t) = line.strip_prefix('-') {
+                d.removed.push((old_line, t.to_string()));
+                old_line += 1;
+            }
+        }
+    }
+    out.retain(|d| !d.path.is_empty());
+    out
+}
+
+/// A stable hash of some bytes, as hex.
+pub fn hash_hex(bytes: &[u8]) -> String {
+    let mut h = Fnv::new();
+    h.write(bytes);
+    format!("{:016x}", h.0)
+}
+
 /// FNV-1a 64-bit hash. Stable across Rust versions, unlike the std hasher.
 struct Fnv(u64);
 
@@ -336,6 +452,44 @@ mod tests {
         assert_eq!(since(&start).unwrap().fingerprint, first.fingerprint);
         write(d, "a.txt", "2\n");
         assert_ne!(since(&start).unwrap().fingerprint, first.fingerprint);
+    }
+
+    #[test]
+    fn parses_unified_diff_with_tricky_lines() {
+        let text = "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -3,2 +3 @@\n--- old comment\n-x\n+y\r\ndiff --git a/gone.rs b/gone.rs\n--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn a() {}\n";
+        let d = parse_unified(text);
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0].path, "q.sql");
+        assert_eq!(
+            d[0].removed,
+            [(3, "-- old comment".to_string()), (4, "x".to_string())]
+        );
+        assert_eq!(d[0].added, [(3, "y".to_string())]);
+        assert_eq!(d[1].path, "gone.rs");
+        assert_eq!(d[1].removed, [(1, "fn a() {}".to_string())]);
+    }
+
+    #[test]
+    fn line_diffs_cover_commits_and_new_files_of_the_session_only() {
+        let tmp = repo();
+        let d = tmp.path();
+        write(d, "a.txt", "one\n");
+        write(d, "user.txt", "one\n");
+        run(d, &["add", "."]);
+        run(d, &["commit", "-q", "-m", "first"]);
+        write(d, "user.txt", "one\nuser\n");
+        let start = record(d, 0).unwrap().unwrap();
+
+        write(d, "a.txt", "one\ntwo\n");
+        run(d, &["commit", "-q", "-m", "agent", "--", "a.txt"]);
+        write(d, "new.txt", "x\n");
+
+        let c = since(&start).unwrap();
+        let diffs = line_diffs(&start, &c).unwrap();
+        let paths: Vec<_> = diffs.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "new.txt"]);
+        assert_eq!(diffs[0].added, [(2, "two".to_string())]);
+        assert_eq!(diffs[1].status, 'A');
     }
 
     #[test]

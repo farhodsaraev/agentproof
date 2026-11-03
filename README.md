@@ -4,7 +4,7 @@ Your agent says "done." Agentproof shows the proof.
 
 Agentproof is a plugin for Claude Code. It examines the work of an AI coding agent after each turn. It compares the session transcript with the changes in the repository.
 
-**Status: milestone 1 of 4.** Agentproof records the start point of a session, reads the transcript and finds the changes. It does not have rule checks yet. Thus it does not give a verdict.
+**Status: milestone 2 of 4.** Agentproof runs ten rule checks and gives a verdict. It does not have the AI check or the full report yet.
 
 ## What Agentproof does now
 
@@ -12,6 +12,8 @@ Agentproof is a plugin for Claude Code. It examines the work of an AI coding age
 - When the agent stops, Agentproof finds all changes since the start. These include commits that the agent made.
 - Agentproof keeps changes from before the session apart from the work of the agent.
 - Agentproof shows a short message in Claude Code. It writes the full data to a JSON file.
+- Agentproof runs ten rule checks. Examples: tests that failed although the agent said that they pass, skipped tests, dangerous commands, new dependencies and changes to sensitive files.
+- Agentproof gives a verdict: "do not trust this work", "examine N items" or "no red flags found". It never says "safe" without the AI check.
 - If nothing changed since the last check, Agentproof shows nothing.
 - Agentproof does not change the repository. It keeps its own files in `~/.agentproof`.
 

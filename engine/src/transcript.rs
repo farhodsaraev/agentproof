@@ -23,6 +23,7 @@ pub struct Session {
     /// Files that the agent edited or wrote with its file tools.
     pub files_edited: Vec<String>,
     pub final_message: Option<String>,
+    pub final_message_line: Option<usize>,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
     /// Lines that are valid JSON but that this version does not use.
@@ -45,6 +46,8 @@ pub struct CommandRun {
     /// None until the result is found.
     pub failed: Option<bool>,
     pub exit_code: Option<i32>,
+    /// The start of the output of a failed command.
+    pub error: Option<String>,
     pub from_subagent: bool,
 }
 
@@ -110,6 +113,7 @@ pub fn parse(raw: &str) -> Session {
                             s.assistant_messages += 1;
                             if let Some(t) = block.get("text").and_then(Value::as_str) {
                                 s.final_message = Some(t.to_string());
+                                s.final_message_line = Some(line_no);
                             }
                         }
                     }
@@ -131,6 +135,7 @@ pub fn parse(raw: &str) -> Session {
                                 command,
                                 failed: None,
                                 exit_code: None,
+                                error: None,
                                 from_subagent: sidechain,
                             });
                         } else if FILE_TOOLS.contains(&name) {
@@ -174,11 +179,13 @@ pub fn parse(raw: &str) -> Session {
                             .unwrap_or(false);
                         let cmd = &mut s.commands[idx];
                         cmd.failed = Some(is_error);
-                        cmd.exit_code = if is_error {
-                            exit_code(&result_text(block))
+                        if is_error {
+                            let text = result_text(block);
+                            cmd.exit_code = exit_code(&text);
+                            cmd.error = Some(error_head(&text));
                         } else {
-                            Some(0)
-                        };
+                            cmd.exit_code = Some(0);
+                        }
                     }
                 }
                 Some("text") => {
@@ -222,6 +229,15 @@ fn result_text(block: &Value) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// The first 500 characters of a failed result, without the `Exit code N` line.
+fn error_head(text: &str) -> String {
+    let body = match text.trim_start().strip_prefix("Exit code ") {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, b)| b),
+        None => text,
+    };
+    body.trim().chars().take(500).collect()
 }
 
 /// Claude Code starts a failed command result with `Exit code N`.
