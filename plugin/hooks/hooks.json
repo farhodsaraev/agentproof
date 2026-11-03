@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agentproof check --hook",
-            "timeout": 30
+            "timeout": 330
           }
         ]
       }

@@ -6,6 +6,11 @@
       "name": "agentproof",
       "source": "./plugin",
       "description": "Checks whether to trust what your AI coding agent did."
+    },
+    {
+      "name": "agentproof-ai",
+      "source": "./plugin-ai",
+      "description": "Optional AI check that uses your own Claude Code login and plan, with no API key."
     }
   ]
 }

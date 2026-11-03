@@ -1,0 +1,7 @@
+{
+  "name": "agentproof-ai",
+  "version": "0.1.0",
+  "description": "Optional AI check for Agentproof. It uses your own Claude Code login and plan, with no API key.",
+  "author": { "name": "Farhod" },
+  "license": "MIT OR Apache-2.0"
+}

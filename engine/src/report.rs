@@ -9,8 +9,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::ai::ClaimVerdict;
 use crate::changes::{FileDiff, Origin};
-use crate::check::CheckResult;
+use crate::check::{AiStatus, CheckResult};
 use crate::checks::{self, Finding, Severity, Verdict};
 use crate::messages::{self, count, report_text as text};
 use crate::time::{clock, format_utc};
@@ -72,6 +73,7 @@ fn verdict(h: &mut String, r: &CheckResult, title: &str) {
         Verdict::DontTrust => "bad",
         Verdict::Check => "warn",
         Verdict::NoRedFlags => "ok",
+        Verdict::Safe => "ok",
         Verdict::Incomplete => "none",
     };
     let mut chips = String::new();
@@ -203,6 +205,9 @@ fn red_flags(h: &mut String, r: &CheckResult, diffs: &[FileDiff]) {
             esc(&f.text),
             esc(&messages::location_text(f).unwrap_or_default()),
         );
+        if f.other_origin {
+            let _ = write!(h, "<p class=\"note\">{}</p>", messages::OTHER_ORIGIN);
+        }
         if let Some(code) = file_context(f, diffs) {
             let _ = write!(h, "<pre class=\"diff\">{code}</pre>");
         } else if let Some(cmd) = command_context(f, r.session.as_ref()) {
@@ -292,11 +297,68 @@ fn claims(h: &mut String, r: &CheckResult) {
     for f in facts {
         let _ = write!(h, "<li>{}</li>", esc(&f));
     }
-    let _ = write!(
-        h,
-        "</ul></div></div><p class=\"note ai\">AI check: not available. {}</p></section>",
-        text::NO_AI
-    );
+    h.push_str("</ul></div></div>");
+    ai_claims(h, &r.ai);
+    h.push_str("</section>");
+}
+
+/// The AI opinions, visually apart from the facts above them.
+fn ai_claims(h: &mut String, ai: &AiStatus) {
+    h.push_str("<div class=\"ai\"><h3>AI check <span class=\"tag\">opinion</span></h3>");
+    match ai {
+        AiStatus::Off => {
+            let _ = write!(h, "<p class=\"note\">{}</p>", text::AI_OFF);
+        }
+        AiStatus::NotNeeded => {
+            let _ = write!(h, "<p class=\"note\">{}</p>", text::AI_NOT_NEEDED);
+        }
+        AiStatus::Running => {
+            let _ = write!(h, "<p class=\"note\">{}</p>", text::AI_RUNNING);
+        }
+        AiStatus::Done(r) => {
+            if let Some(e) = &r.error {
+                let _ = write!(
+                    h,
+                    "<p class=\"warn-text\">The AI check failed. The reason is: {}</p>",
+                    esc(e)
+                );
+            } else if r.claims.is_empty() {
+                h.push_str(
+                    "<p class=\"note\">The AI check found no claims in the final message.</p>",
+                );
+            } else {
+                h.push_str("<table><thead><tr><th>Claim of the agent</th><th>AI verdict</th><th>Reason and evidence</th></tr></thead><tbody>");
+                for c in &r.claims {
+                    let (label, class) = match c.verdict {
+                        ClaimVerdict::Supported => ("Supported", "ok"),
+                        ClaimVerdict::Unsupported => ("Unsupported", "medium"),
+                        ClaimVerdict::Contradicted => ("Contradicted", "critical"),
+                    };
+                    let _ = write!(
+                        h,
+                        "<tr><td>{}</td><td><span class=\"chip {class}\">{label}</span></td><td>{}<div class=\"loc\">{}</div></td></tr>",
+                        esc(&c.claim),
+                        esc(&c.reason),
+                        esc(&c.evidence)
+                    );
+                }
+                h.push_str("</tbody></table>");
+            }
+            let mut note = format!("{} Model: {}.", text::AI_LABEL, esc(&r.model));
+            if r.removed_secrets > 0 {
+                let _ = write!(
+                    note,
+                    " Agentproof removed {} before the check.",
+                    count(r.removed_secrets, "secret", "secrets")
+                );
+            }
+            if r.shortened_input {
+                note.push_str(" The input was too long, so Agentproof sent only a part of it.");
+            }
+            let _ = write!(h, "<p class=\"note\">{note}</p>");
+        }
+    }
+    h.push_str("</div>");
 }
 
 fn blast_radius(h: &mut String, r: &CheckResult, diffs: &[FileDiff]) {
@@ -331,6 +393,12 @@ fn blast_radius(h: &mut String, r: &CheckResult, diffs: &[FileDiff]) {
                 _ => "binary".into(),
             };
             let mut tags = Vec::new();
+            if r.session
+                .as_ref()
+                .is_some_and(|s| !checks::changed_by_agent(s, &f.path))
+            {
+                tags.push("<span class=\"tag\">not touched by the agent</span>".to_string());
+            }
             if checks::is_test_file(&f.path) {
                 tags.push("<span class=\"tag\">test</span>".to_string());
             }
@@ -482,7 +550,8 @@ h1{font-size:28px;line-height:1.2;margin:0 0 8px}h2{font-size:17px;margin:0 0 12
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .chip{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
 .chip.critical{color:var(--crit);background:var(--crit-bg);border:1px solid var(--crit)}.chip.high{color:var(--high);background:var(--high-bg)}
-.chip.medium{color:var(--med);background:var(--med-bg)}.chip.low{color:var(--low);background:var(--low-bg)}
+.chip.medium{color:var(--med);background:var(--med-bg)}.chip.low{color:var(--low);background:var(--low-bg)}.chip.ok{color:var(--ok);background:var(--ok-bg)}
+.ai{border:1px dashed var(--line);border-radius:10px;padding:12px 14px;margin-top:14px}
 .note{color:var(--muted);font-size:13px;margin:8px 0 0}.warn-text{color:var(--med)}
 .count{color:var(--muted);font-weight:400}
 .checklist{padding-left:22px;margin:0}.checklist li{margin:6px 0}.loc{color:var(--muted);font-size:13px}
@@ -493,7 +562,7 @@ code{font:13px ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-a
 .add{color:var(--add)}.del{color:var(--del)}.plus{color:var(--add)}.minus{color:var(--del)}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media (max-width:640px){.cols{grid-template-columns:1fr}}
 blockquote{margin:0;padding:10px 12px;border-left:3px solid var(--line);background:var(--code);border-radius:0 8px 8px 0;white-space:pre-wrap;max-height:320px;overflow:auto}
-ul{margin:0;padding-left:20px}.ai{border-top:1px dashed var(--line);padding-top:10px}
+ul{margin:0;padding-left:20px}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:12px}td.num{white-space:nowrap}
 .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:6px;background:var(--low-bg);color:var(--low);margin:1px 2px}.tag.warn{background:var(--med-bg);color:var(--med)}

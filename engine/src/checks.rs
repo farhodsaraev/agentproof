@@ -23,20 +23,54 @@ pub enum Severity {
 #[serde(tag = "rule", rename_all = "snake_case")]
 pub enum Rule {
     TestFileDeleted,
-    TestsRemoved { count: usize },
-    AssertionsRemoved { count: usize },
-    TestSkipped { marker: String },
-    TestFocused { marker: String },
+    TestsRemoved {
+        count: usize,
+    },
+    AssertionsRemoved {
+        count: usize,
+    },
+    TestSkipped {
+        marker: String,
+    },
+    TestFocused {
+        marker: String,
+    },
     TestsFailedButClaimedPass,
     TestsFailedAtEnd,
-    PassClaimWithoutTests { phrase: String },
-    DangerousCommand { kind: Danger },
+    PassClaimWithoutTests {
+        phrase: String,
+    },
+    DangerousCommand {
+        kind: Danger,
+    },
     DependenciesChanged,
-    SensitiveFile { area: Area },
-    SuppressionsAdded { count: usize, marker: String },
-    LargeDeletion { lines: usize },
-    OutsideRequest { count: usize, folders: Vec<String> },
-    RepeatedError { count: usize },
+    SensitiveFile {
+        area: Area,
+    },
+    SuppressionsAdded {
+        count: usize,
+        marker: String,
+    },
+    LargeDeletion {
+        lines: usize,
+    },
+    OutsideRequest {
+        count: usize,
+        folders: Vec<String>,
+    },
+    RepeatedError {
+        count: usize,
+    },
+    /// AI opinion: the evidence shows that a claim of the agent is false.
+    AiContradicted {
+        claim: String,
+        reason: String,
+    },
+    /// AI opinion: the evidence does not show that a claim of the agent is true.
+    AiUnsupported {
+        claim: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -73,6 +107,10 @@ pub struct Finding {
     pub evidence: String,
     /// The ASD-STE100 text for users. `check.rs` fills it.
     pub text: String,
+    /// The agent did not touch this file, so a different session or a person
+    /// possibly made the change. The severity is then Low.
+    #[serde(default)]
+    pub other_origin: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -81,6 +119,8 @@ pub enum Verdict {
     DontTrust,
     Check,
     NoRedFlags,
+    /// Only with the AI check: no problems, and the evidence supports every claim.
+    Safe,
     /// A source was missing, so some checks did not run.
     Incomplete,
 }
@@ -113,17 +153,98 @@ pub fn evaluate(input: &Input) -> Vec<Finding> {
     if let (Some(s), Some(root)) = (input.session, input.root) {
         outside_request(s, input.diffs, root, &mut out);
     }
+    // Git does not know who made a change. A change to a file that the agent
+    // did not touch can come from a different session or from a person.
+    if let Some(s) = input.session {
+        for f in &mut out {
+            let other = f.transcript_line.is_none()
+                && f.file
+                    .as_deref()
+                    .is_some_and(|file| !changed_by_agent(s, file));
+            if other {
+                f.severity = Severity::Low;
+                f.other_origin = true;
+            }
+        }
+    }
     out.sort_by_key(|f| f.severity);
     out
 }
 
+/// Commands that can change files without naming them, for example a package
+/// manager or a formatter. After such a command, any file can be work of the agent.
+const BROAD_COMMANDS: &[&str] = &[
+    "install",
+    " add ",
+    "update",
+    "upgrade",
+    "fmt",
+    "format",
+    "prettier",
+    "black ",
+    "ruff",
+    "--fix",
+    "generate",
+    "codegen",
+    "migrate",
+    "make",
+    "go get",
+    "go mod",
+    "patch ",
+    "git checkout",
+    "git switch",
+    "git apply",
+    "git am",
+    "git merge",
+    "git pull",
+    "git rebase",
+    "git stash",
+    "git restore",
+    "git reset",
+    "git cherry-pick",
+    "git revert",
+];
+
+/// True if the agent possibly changed the file: it edited the file with a file
+/// tool, named the file in a command, or ran a command that can change any file.
+pub fn changed_by_agent(s: &Session, path: &str) -> bool {
+    let rel = path.replace('\\', "/").to_lowercase();
+    let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+    let edited = s.files_edited.iter().any(|e| {
+        let e = e.replace('\\', "/").to_lowercase();
+        let e = e.trim_start_matches("./");
+        e == rel || e.ends_with(&format!("/{rel}"))
+    });
+    let commands = s
+        .commands
+        .iter()
+        .map(|c| c.command.as_str())
+        .chain(s.subagent_commands.iter().map(String::as_str));
+    edited
+        || commands.into_iter().any(|c| {
+            let c = c.replace('\\', "/").to_lowercase();
+            c.contains(&rel)
+                || (name.len() >= 3 && c.contains(&name))
+                || BROAD_COMMANDS.iter().any(|b| c.contains(b))
+        })
+}
+
+#[cfg(test)]
 pub fn verdict(findings: &[Finding], complete: bool) -> Verdict {
+    verdict_with_ai(findings, complete, false)
+}
+
+/// `ai_confirms`: the AI check ran and supported every claim of the agent.
+/// Only then can the verdict be "safe to merge". Rule checks alone never say "safe".
+pub fn verdict_with_ai(findings: &[Finding], complete: bool, ai_confirms: bool) -> Verdict {
     if findings.iter().any(|f| f.severity == Severity::Critical) {
         Verdict::DontTrust
     } else if !complete {
         Verdict::Incomplete
     } else if findings.iter().any(|f| f.severity <= Severity::Medium) {
         Verdict::Check
+    } else if ai_confirms {
+        Verdict::Safe
     } else {
         Verdict::NoRedFlags
     }
@@ -147,6 +268,7 @@ fn at_command(rule: Rule, severity: Severity, c: &CommandRun) -> Finding {
         transcript_line: Some(c.line),
         evidence: short(&c.command),
         text: String::new(),
+        other_origin: false,
     }
 }
 
@@ -165,6 +287,7 @@ fn at_file(
         transcript_line: None,
         evidence: short(evidence),
         text: String::new(),
+        other_origin: false,
     }
 }
 
@@ -215,33 +338,37 @@ pub fn test_tool(command: &str) -> Option<&'static str> {
     })
 }
 
-const PASS_PHRASES: &[&str] = &[
-    "all tests pass",
-    "tests pass",
-    "tests passed",
-    "tests are passing",
-    "tests passing",
-    "test suite passes",
-    "tests are green",
-    "all green",
-    "tests succeed",
-    "tests run green",
+/// Words that make a sentence about tests negative or uncertain.
+const NOT_A_PASS: &[&str] = &[
+    "not", "no", "never", "fail", "failed", "fails", "failing", "skip", "skipped", "without",
+    "cannot", "couldn", "didn", "don", "doesn", "isn", "aren", "wasn", "weren", "won", "should",
+    "will", "would", "may", "might", "if", "before",
 ];
 
-/// A phrase in the text that says that the tests pass, if any.
-pub fn pass_claim(text: &str) -> Option<&'static str> {
-    let t = text.to_lowercase();
-    PASS_PHRASES.iter().copied().find(|p| {
-        t.match_indices(p).any(|(i, _)| {
-            let before: String = t[..i]
-                .chars()
-                .rev()
-                .take(15)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            !(before.contains("not ") || before.contains("n't") || before.contains("no "))
+/// The sentence in the text that says that the tests pass, if any. A sentence
+/// counts if it has a word that starts with "test" and a word for success, and
+/// no negative or uncertain word. The sentence is shortened to 12 words.
+pub fn pass_claim(text: &str) -> Option<String> {
+    text.split(['.', '!', '?', '\n', ';']).find_map(|sentence| {
+        let lower = sentence.to_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let about_tests = words.iter().any(|w| w.starts_with("test"));
+        let success = words.iter().any(|w| {
+            (w.starts_with("pass") && !w.starts_with("passw"))
+                || *w == "green"
+                || w.starts_with("succe")
+        });
+        let negative = words.iter().any(|w| NOT_A_PASS.contains(w));
+        (about_tests && success && !negative).then(|| {
+            let words: Vec<&str> = sentence.split_whitespace().collect();
+            let mut out = words.iter().take(12).copied().collect::<Vec<_>>().join(" ");
+            if words.len() > 12 {
+                out.push('…');
+            }
+            out
         })
     })
 }
@@ -255,7 +382,7 @@ fn test_runs(s: &Session, out: &mut Vec<Finding>) {
         .collect();
 
     if runs.is_empty() {
-        if let (Some(phrase), Some(line)) = (claim, s.final_message_line) {
+        if let (Some(phrase), Some(line)) = (claim.as_ref(), s.final_message_line) {
             out.push(Finding {
                 rule: Rule::PassClaimWithoutTests {
                     phrase: phrase.to_string(),
@@ -266,6 +393,7 @@ fn test_runs(s: &Session, out: &mut Vec<Finding>) {
                 transcript_line: Some(line),
                 evidence: short(s.final_message.as_deref().unwrap_or("")),
                 text: String::new(),
+                other_origin: false,
             });
         }
         return;
@@ -837,7 +965,18 @@ fn suppression_at(line: &str, marker: &str) -> bool {
     }
 }
 
+/// Documents can name a marker as text. Only code can suppress a warning.
+fn is_document(path: &str) -> bool {
+    let p = path.to_lowercase();
+    [".md", ".markdown", ".txt", ".rst", ".adoc", ".org"]
+        .iter()
+        .any(|ext| p.ends_with(ext))
+}
+
 fn suppressions(d: &FileDiff, out: &mut Vec<Finding>) {
+    if is_document(&d.path) {
+        return;
+    }
     let hits: Vec<&(u32, String)> = d
         .added
         .iter()
@@ -1059,11 +1198,23 @@ mod tests {
 
     #[test]
     fn finds_pass_claims_but_not_negations() {
-        assert_eq!(pass_claim("Done. All tests pass."), Some("all tests pass"));
         assert_eq!(
-            pass_claim("The tests are green now"),
-            Some("tests are green")
+            pass_claim("Done. All tests pass.").as_deref(),
+            Some("All tests pass")
         );
+        assert_eq!(
+            pass_claim("The tests are green now").as_deref(),
+            Some("The tests are green now")
+        );
+        assert_eq!(
+            pass_claim("I created the file. I also ran all tests and they pass.").as_deref(),
+            Some("I also ran all tests and they pass")
+        );
+        assert_eq!(
+            pass_claim("Run the tests before you merge, so that they pass."),
+            None
+        );
+        assert_eq!(pass_claim("Tests: 12 passed, 1 failed."), None);
         assert_eq!(pass_claim("Not all tests pass yet."), None);
         assert_eq!(pass_claim("The tests don't pass."), None);
         assert_eq!(pass_claim("I updated the docs."), None);
@@ -1115,7 +1266,7 @@ mod tests {
         assert_eq!(
             only_session(&s),
             [Rule::PassClaimWithoutTests {
-                phrase: "tests pass".into()
+                phrase: "Tests pass".into()
             }]
         );
     }
@@ -1343,6 +1494,7 @@ mod tests {
             transcript_line: None,
             evidence: String::new(),
             text: String::new(),
+            other_origin: false,
         };
         assert_eq!(verdict(&[f(Severity::Critical)], false), Verdict::DontTrust);
         assert_eq!(verdict(&[f(Severity::Medium)], true), Verdict::Check);
@@ -1501,6 +1653,20 @@ mod false_alarms {
     }
 
     #[test]
+    fn documents_that_name_a_marker_are_not_findings() {
+        let d = [added(
+            "docs/rules.md",
+            &["| Lint suppressions (`eslint-disable`, `#[allow]`) | Medium |"],
+        )];
+        let f = evaluate(&Input {
+            session: None,
+            diffs: &d,
+            root: None,
+        });
+        assert!(f.is_empty(), "{f:#?}");
+    }
+
+    #[test]
     fn markers_inside_strings_are_not_findings() {
         let d = [added(
             "src/rules.rs",
@@ -1534,5 +1700,95 @@ mod false_alarms {
         let started = std::time::Instant::now();
         assert_eq!(named_paths(&s, tmp.path()), ["src/a.rs"]);
         assert!(started.elapsed().as_secs() < 2);
+    }
+}
+
+#[cfg(test)]
+mod other_origin {
+    use super::*;
+    use crate::transcript::CommandRun;
+
+    fn changed(path: &str, lines: &[&str]) -> FileDiff {
+        FileDiff {
+            path: path.into(),
+            status: 'M',
+            added: lines
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i as u32 + 1, t.to_string()))
+                .collect(),
+            removed: Vec::new(),
+        }
+    }
+
+    fn cmd(command: &str) -> CommandRun {
+        CommandRun {
+            line: 1,
+            command: command.into(),
+            failed: Some(false),
+            exit_code: Some(0),
+            error: None,
+            from_subagent: false,
+        }
+    }
+
+    #[test]
+    fn a_file_that_the_agent_did_not_touch_gets_low_severity_and_a_note() {
+        let s = Session {
+            files_edited: vec![r"C:\repo\src\app.rs".into()],
+            commands: vec![cmd("cargo test")],
+            ..Session::default()
+        };
+        let d = [
+            changed("Cargo.toml", &["serde = \"1\""]),
+            changed("src/app.rs", &["// eslint-disable"]),
+        ];
+        let f = evaluate(&Input {
+            session: Some(&s),
+            diffs: &d,
+            root: None,
+        });
+        let dep = f
+            .iter()
+            .find(|f| f.rule == Rule::DependenciesChanged)
+            .unwrap();
+        assert_eq!(dep.severity, Severity::Low);
+        assert!(dep.other_origin);
+        let sup = f
+            .iter()
+            .find(|f| matches!(f.rule, Rule::SuppressionsAdded { .. }))
+            .unwrap();
+        assert_eq!(
+            sup.severity,
+            Severity::Medium,
+            "the agent edited src/app.rs"
+        );
+        assert!(!sup.other_origin);
+    }
+
+    #[test]
+    fn named_files_broad_commands_and_subagents_count_as_agent_work() {
+        let mut s = Session {
+            commands: vec![cmd("sed -i 's/a/b/' Cargo.toml")],
+            ..Session::default()
+        };
+        assert!(changed_by_agent(&s, "Cargo.toml"));
+        assert!(!changed_by_agent(&s, "src/billing.rs"));
+        s.commands.push(cmd("npm install leftpad"));
+        assert!(
+            changed_by_agent(&s, "package.json"),
+            "a package manager can change any file"
+        );
+        let s = Session {
+            subagent_commands: vec!["echo x > src/billing.rs".into()],
+            ..Session::default()
+        };
+        assert!(changed_by_agent(&s, "src/billing.rs"));
+        let s = Session {
+            files_edited: vec!["src/lib.rs".into()],
+            ..Session::default()
+        };
+        assert!(changed_by_agent(&s, "src/lib.rs"));
+        assert!(!changed_by_agent(&s, "lib.rs/other.rs"));
     }
 }

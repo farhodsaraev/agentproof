@@ -4,7 +4,7 @@ Nov 3, 2026 · @Farhod
 
 Name: Agentproof (chosen Nov 3, 2026; free on crates.io). Domains, plugin marketplaces and trademarks are not checked yet.
 
-Status: milestone 3 is done (Nov 3, 2026). Agentproof gives a short verdict in the app and writes a full HTML report. The macOS build from milestone 1 is not done.
+Status: milestone 4 is done (Nov 3, 2026), except a test with a real API key. The macOS build from milestone 1 is not done.
 
 ## Overview
 
@@ -352,3 +352,42 @@ Updated Nov 3, 2026.
 | `/agentproof:report` command that opens the report in the web browser | Done. Not tested in the app yet |
 | "Claimed and done" with the AI check | Not started. Milestone 4. The section now shows the final message and the test facts from the transcript |
 | Blast radius grouped by intent | Not started. It needs the AI check. The table now marks test files, sensitive files and files outside the request |
+
+## Milestone 4 progress
+
+Updated Nov 3, 2026.
+
+| Item | Status |
+| --- | --- |
+| AI check with Anthropic (default model `claude-opus-5-5`, structured JSON output, server-side fallback on a refusal) | Done. Tested with a fake server |
+| AI check with an OpenAI-compatible server (OpenAI, Ollama) | Done. Tested with a fake server |
+| Secret removal before the AI check: known key formats, secret values, private keys, passwords in URLs, whole `.env` and key files | Done. Tested |
+| The AI check runs in the background, so the agent does not wait | Done. Tested on Windows: the hook returned in 1.2 seconds |
+| AI findings in the message, the verdict and the report, marked as opinion | Done |
+| Verdict "safe to merge", only when the AI check supports every claim and there are no other problems | Done |
+| Strict mode stops the agent once for each new critical finding | Done. Tested |
+| Settings: user file `~/.agentproof/config.toml`; project file `.agentproof.toml` (strict mode only) | Done |
+| Test with a real API key | Not done. Waiting for an API key from the owner |
+| Limits (large deletion, repeated errors) in the settings file | Not started. The limits are fixed in the code |
+| AI check with the user's own Claude plan (no API key): optional plugin `agentproof-ai` with a Claude Code agent hook | Done. JSON validated. Not tested in the app yet |
+
+Decisions made during milestone 4:
+
+- Only the user settings file can turn on the AI check. A repository cannot choose the provider, the address or the key, because a cloned repository could otherwise send your code and your key to its own server.
+- The API key is only in an environment variable, never in a file.
+- The AI check is off by default. An API key in the environment does not turn it on.
+- Rust has no official Claude SDK, so the engine uses plain HTTP requests, as the Claude API documentation shows.
+
+AI check with the user's plan, decided Nov 3, 2026:
+
+- The optional plugin `agentproof-ai` uses an agent hook, a documented Claude Code feature. Claude Code starts a separate checker agent with the user's own login. There is no API key and no extra money. It uses plan limits.
+- The checker gives a result only to the agent and the chat, not to the report. A contradicted claim makes the agent continue with the reason. The `stop_hook_active` field stops a second check in the same turn, so there is no loop.
+- Not chosen for now: the engine starts `claude -p` with the user's subscription. The Claude Code legal page does not permit third-party developers to route requests through Free, Pro, Max or Ultra plan credentials for their users. It is not clear if a plugin that starts `claude -p` is "ordinary use". Ask Anthropic in writing before this option is added. If Anthropic agrees, it replaces the agent hook, so that each turn has only one AI call.
+
+Facts found in the app test of Nov 3, 2026:
+
+- The rule check found the planted false claim: "The agent said "tests pass", but it did not run the tests."
+- False alarm, fixed: a document that names `eslint-disable` as text counted as a warning suppression. Documents (`.md`, `.txt` and similar) are now not examined for suppressions.
+- False alarm, fixed: two sessions in the same folder. A change from one session counted as work of the agent in the other session. Now a finding on a file that the agent did not touch gets the severity Low and a note: "a different session or a person possibly made this change". The agent touched a file if it edited the file with a file tool, named the file in a command, or ran a command that can change any file (for example a package manager or a formatter). Edits and commands of subagents count too: their transcripts are in a separate folder.
+- Missed claim, fixed: the fixed phrase list did not find "I also ran all tests and they pass". Now a sentence is a "tests pass" claim if it has a word that starts with "test", a word for success ("pass", "green", "succeed"), and no negative or uncertain word.
+- Plugins load only when a session starts. A new plugin is not active in a session that was already open.

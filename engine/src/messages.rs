@@ -18,6 +18,8 @@ pub struct Summary<'a> {
     pub no_start: bool,
     pub no_git: bool,
     pub no_transcript: bool,
+    /// The AI check runs in the background, so the report updates later.
+    pub ai_running: bool,
     pub report_path: &'a str,
 }
 
@@ -61,6 +63,9 @@ pub fn summary(s: &Summary) -> String {
         ));
     }
 
+    if s.ai_running {
+        out.push("The AI check runs now. The report shows its result when it is complete.".into());
+    }
     if s.no_start && !s.no_git {
         out.push(
             "There is no start point for this session. Thus Agentproof used the last commit."
@@ -90,6 +95,7 @@ pub fn verdict_title(v: Verdict, findings: &[Finding]) -> String {
             format!("examine {}", count(n, "item", "items"))
         }
         Verdict::NoRedFlags => "no red flags found".into(),
+        Verdict::Safe => "safe to merge".into(),
         Verdict::Incomplete => "incomplete, because some checks did not run".into(),
     }
 }
@@ -99,7 +105,8 @@ pub fn verdict_explanation(v: Verdict) -> &'static str {
     match v {
         Verdict::DontTrust => "Agentproof found a critical problem. Do not accept this work before you examine the critical findings.",
         Verdict::Check => "Agentproof found items that need your attention. Examine each item before you accept the work.",
-        Verdict::NoRedFlags => "The rule checks found no problems. This does not prove that the work is correct, because there is no AI check yet.",
+        Verdict::NoRedFlags => "The rule checks found no problems. This does not prove that the work is correct, because the AI check did not confirm the claims of the agent.",
+        Verdict::Safe => "The rule checks found no problems, and the AI check found evidence for each claim of the agent. Examine the changes as usual.",
         Verdict::Incomplete => "Agentproof could not read the transcript or the changes. Thus some checks did not run.",
     }
 }
@@ -116,11 +123,20 @@ pub fn severity_text(s: Severity) -> &'static str {
 /// A short location in parentheses, for the message.
 /// The finding text with its location in parentheses before the full stop.
 fn with_location(f: &Finding) -> String {
-    match location_text(f) {
+    let mut out = match location_text(f) {
         Some(l) => format!("{} ({l}).", f.text.trim_end_matches('.')),
         None => f.text.clone(),
+    };
+    if f.other_origin {
+        out.push(' ');
+        out.push_str(OTHER_ORIGIN);
     }
+    out
 }
+
+/// The note for a finding on a file that the agent did not touch.
+pub const OTHER_ORIGIN: &str =
+    "The agent did not touch this file, so a different session or a person possibly made this change.";
 
 /// The location of a finding, without punctuation.
 pub fn location_text(f: &Finding) -> Option<String> {
@@ -181,6 +197,14 @@ pub fn finding_text(rule: &Rule) -> String {
                 .join(", "),
         ),
         Rule::RepeatedError { count: n } => format!("The same error occurred {n} times."),
+        Rule::AiContradicted { claim, reason } => format!(
+            "AI opinion: the evidence does not agree with the claim \"{}\". {reason}",
+            short_claim(claim)
+        ),
+        Rule::AiUnsupported { claim, reason } => format!(
+            "AI opinion: there is no evidence for the claim \"{}\". {reason}",
+            short_claim(claim)
+        ),
     }
 }
 
@@ -214,6 +238,32 @@ pub fn report_opened(path: &str) -> String {
     format!("Agentproof opened the report in your web browser. The report is in {path}.")
 }
 
+/// A claim in at most 12 words, so that the sentence stays short.
+fn short_claim(claim: &str) -> String {
+    let words: Vec<&str> = claim.split_whitespace().collect();
+    if words.len() > 12 {
+        format!("{}…", words[..12].join(" "))
+    } else {
+        words.join(" ").trim_end_matches('.').to_string()
+    }
+}
+
+/// Strict mode: the text that the agent gets when Agentproof stops it.
+pub fn block_reason(findings: &[&Finding]) -> String {
+    let mut out = vec![
+        "Agentproof stopped the end of this turn, because it found a critical problem.".to_string(),
+        "Correct the problem, or tell the user about it before you stop.".to_string(),
+    ];
+    for f in findings {
+        out.push(format!(
+            "{}: {}",
+            severity_text(f.severity),
+            with_location(f)
+        ));
+    }
+    out.join(" ")
+}
+
 pub fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -221,7 +271,12 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 /// Fixed sentences in the report. They are here so that the tests examine them.
 pub mod report_text {
     pub const RULES_ONLY: &str = "This report uses rule checks only. Rule checks find facts in the transcript and in the changes, without AI.";
-    pub const NO_AI: &str = "This section needs the AI check. The AI check comes in a later version. Until then, compare the claim with the evidence yourself.";
+    pub const AI_OFF: &str = "The AI check is off. To turn it on, add the AI settings to the user settings file. The README tells you how.";
+    pub const AI_RUNNING: &str =
+        "The AI check runs now. Open the report again in one or two minutes.";
+    pub const AI_NOT_NEEDED: &str =
+        "The AI check did not run, because there is no final message or no change.";
+    pub const AI_LABEL: &str = "These verdicts are the opinion of an AI model. They are not facts. Examine the evidence before you accept them.";
     pub const NO_FINDINGS: &str = "The rule checks found no problems.";
     pub const NOTHING_TO_VERIFY: &str =
         "Agentproof found no item that needs extra attention. Examine the changes as usual.";
@@ -276,6 +331,14 @@ pub(crate) mod tests {
                 folders: vec!["src/login".into(), "docs".into()],
             },
             Rule::RepeatedError { count: 5 },
+            Rule::AiContradicted {
+                claim: "I fixed the login bug and added three tests that cover all the edge cases of the new session code".into(),
+                reason: "The last test run failed.".into(),
+            },
+            Rule::AiUnsupported {
+                claim: "No behavior changed".into(),
+                reason: "The transcript does not show a test run.".into(),
+            },
         ];
         for kind in [
             Danger::RecursiveDelete,
@@ -303,6 +366,7 @@ pub(crate) mod tests {
     fn finding(rule: Rule, severity: Severity) -> Finding {
         Finding {
             text: finding_text(&rule),
+            other_origin: false,
             rule,
             severity,
             file: Some("src/auth/session_store.ts".into()),
@@ -325,6 +389,7 @@ pub(crate) mod tests {
             no_start: true,
             no_git: false,
             no_transcript: false,
+            ai_running: false,
             report_path: "C:/Users/x/.agentproof/p/s/report.html",
         }
     }
@@ -344,7 +409,10 @@ pub(crate) mod tests {
         use report_text::*;
         for t in [
             RULES_ONLY,
-            NO_AI,
+            AI_OFF,
+            AI_RUNNING,
+            AI_NOT_NEEDED,
+            AI_LABEL,
             NO_FINDINGS,
             NOTHING_TO_VERIFY,
             NO_START,
@@ -358,6 +426,7 @@ pub(crate) mod tests {
             Verdict::DontTrust,
             Verdict::Check,
             Verdict::NoRedFlags,
+            Verdict::Safe,
             Verdict::Incomplete,
         ] {
             assert_ste(verdict_explanation(v));
@@ -377,6 +446,7 @@ pub(crate) mod tests {
             Verdict::DontTrust,
             Verdict::Check,
             Verdict::NoRedFlags,
+            Verdict::Safe,
             Verdict::Incomplete,
         ] {
             assert_ste(&summary(&sample(&findings, &shown, v)));

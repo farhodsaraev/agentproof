@@ -33,6 +33,9 @@ pub struct Session {
     /// All steps in order. Not in the JSON file, because the report shows them.
     #[serde(skip)]
     pub events: Vec<Event>,
+    /// Commands of subagents. Their transcripts are separate files.
+    #[serde(skip)]
+    pub subagent_commands: Vec<String>,
 }
 
 /// One step of the session, for the timeline in the report.
@@ -91,7 +94,34 @@ impl Session {
 pub fn read(path: &Path) -> Result<Session> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read the transcript {}", path.display()))?;
-    Ok(parse(&raw))
+    let mut s = parse(&raw);
+    add_subagents(&mut s, path);
+    Ok(s)
+}
+
+/// Subagent transcripts are in `<session>/subagents/*.jsonl` next to the main
+/// transcript. Their file edits and commands are also work of the agent.
+fn add_subagents(s: &mut Session, path: &Path) {
+    let dir = path.with_extension("").join("subagents");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if e.path().extension().is_none_or(|x| x != "jsonl") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(e.path()) else {
+            continue;
+        };
+        let sub = parse(&raw);
+        for f in sub.files_edited {
+            if !s.files_edited.contains(&f) {
+                s.files_edited.push(f);
+            }
+        }
+        s.subagent_commands
+            .extend(sub.commands.into_iter().map(|c| c.command));
+    }
 }
 
 const FILE_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];

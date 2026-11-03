@@ -1,10 +1,13 @@
 //! Agentproof engine. The plugin hooks call this program.
 
+mod ai;
 mod changes;
 mod check;
 mod checks;
+mod config;
 mod hook;
 mod messages;
+mod redact;
 mod report;
 mod store;
 mod time;
@@ -34,6 +37,12 @@ enum Command {
         /// Read the hook data from standard input.
         #[arg(long)]
         hook: bool,
+        #[command(flatten)]
+        target: Target,
+    },
+    /// Run the AI check and update the report. The stop hook starts this in the background.
+    #[command(hide = true)]
+    Ai {
         #[command(flatten)]
         target: Target,
     },
@@ -74,6 +83,7 @@ fn main() {
         Command::Start { hook, target } => run_start(hook, target),
         Command::Check { hook, json, target } => run_check(hook, json, target),
         Command::Open { target } => run_open(target),
+        Command::Ai { target } => run_ai(target),
     };
     if let Err(err) = result {
         // A failure must never stop the agent. Tell the user and exit normally.
@@ -118,17 +128,46 @@ fn run_start(hook: bool, target: Target) -> Result<()> {
 
 fn run_check(hook: bool, json: bool, target: Target) -> Result<()> {
     let input = resolve(hook, target)?;
-    let result = check::run(&input, !hook)?;
+    let opts = check::Options {
+        force: !hook,
+        hook,
+        // A manual check waits for the AI check. The hook does not.
+        ai_now: !hook,
+        background: false,
+    };
+    let result = check::run(&input, opts)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
-    } else if let Some(message) = &result.message {
-        if hook {
-            println!("{}", serde_json::json!({ "systemMessage": message }));
-        } else {
-            println!("{message}");
+    } else if hook {
+        let mut out = serde_json::Map::new();
+        if let Some(message) = &result.message {
+            out.insert("systemMessage".into(), message.clone().into());
         }
+        // Strict mode: Claude Code does not let the agent stop, and gives it the reason.
+        if let Some(reason) = &result.block_reason {
+            out.insert("decision".into(), "block".into());
+            out.insert("reason".into(), reason.clone().into());
+        }
+        if !out.is_empty() {
+            println!("{}", serde_json::Value::Object(out));
+        }
+    } else if let Some(message) = &result.message {
+        println!("{message}");
     }
     Ok(())
+}
+
+/// The background AI check. The stop hook starts it.
+fn run_ai(target: Target) -> Result<()> {
+    let input = resolve(false, target)?;
+    let opts = check::Options {
+        ai_now: true,
+        background: true,
+        ..check::Options::default()
+    };
+    let result = check::run(&input, opts);
+    check::end_background(&input);
+    result.map(|_| ())
 }
 
 fn run_open(target: Target) -> Result<()> {
@@ -141,7 +180,7 @@ fn run_open(target: Target) -> Result<()> {
     let path = store::session_dir(&cwd, &session)?.join("report.html");
     if !path.exists() {
         // Make the report first, without a message.
-        check::run(&input, false)?;
+        check::run(&input, check::Options::default())?;
     }
     report::open(&path)?;
     println!(

@@ -363,6 +363,13 @@ fn parse_unified(text: &str) -> Vec<FileDiff> {
     out
 }
 
+/// A stable hash of some bytes, as hex.
+pub fn hash_hex(bytes: &[u8]) -> String {
+    let mut h = Fnv::new();
+    h.write(bytes);
+    format!("{:016x}", h.0)
+}
+
 /// FNV-1a 64-bit hash. Stable across Rust versions, unlike the std hasher.
 struct Fnv(u64);
 
