@@ -1,0 +1,7 @@
+{
+  "name": "agentproof",
+  "version": "0.1.0",
+  "description": "Checks whether to trust what your AI coding agent did.",
+  "author": { "name": "Farhod" },
+  "license": "MIT OR Apache-2.0"
+}

@@ -1,0 +1,19 @@
+# Local development environment for Agentproof.
+# Start a shell:  docker compose run --rm dev
+name: agentproof
+
+services:
+  dev:
+    build: .devcontainer
+    image: agentproof-dev
+    volumes:
+      - .:/workspace
+      # Build output and downloaded crates stay in Docker volumes,
+      # because builds in a Windows folder are slow.
+      - target:/target
+      - cargo-registry:/usr/local/cargo/registry
+    command: sleep infinity
+
+volumes:
+  target:
+  cargo-registry:

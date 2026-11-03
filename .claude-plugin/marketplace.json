@@ -1,0 +1,11 @@
+{
+  "name": "agentproof",
+  "owner": { "name": "Farhod" },
+  "plugins": [
+    {
+      "name": "agentproof",
+      "source": "./plugin",
+      "description": "Checks whether to trust what your AI coding agent did."
+    }
+  ]
+}
