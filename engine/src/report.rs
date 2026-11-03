@@ -450,9 +450,10 @@ pub fn esc(s: &str) -> String {
 pub fn open(path: &Path) -> Result<()> {
     let p = path.as_os_str();
     let status = match std::env::consts::OS {
+        // `start` needs Windows path separators.
         "windows" => std::process::Command::new("cmd")
             .args(["/C", "start", ""])
-            .arg(p)
+            .arg(path.to_string_lossy().replace('/', "\\"))
             .status(),
         "macos" => std::process::Command::new("open").arg(p).status(),
         _ => std::process::Command::new("xdg-open").arg(p).status(),
