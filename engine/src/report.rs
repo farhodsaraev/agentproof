@@ -14,6 +14,7 @@ use crate::changes::{FileDiff, Origin};
 use crate::check::{AiStatus, CheckResult};
 use crate::checks::{self, Finding, Severity, Verdict};
 use crate::messages::{self, count, report_text as text};
+use crate::redact;
 use crate::time::{clock, format_utc};
 use crate::transcript::{EventKind, Session};
 
@@ -98,7 +99,10 @@ fn verdict(h: &mut String, r: &CheckResult, title: &str) {
         "<section class=\"verdict {class}\"><h1>{}</h1><p>{}</p><div class=\"chips\">{chips}</div><p class=\"note\">{}</p></section>",
         esc(&capitalize(title)),
         messages::verdict_explanation(r.verdict),
-        text::RULES_ONLY,
+        match &r.ai {
+            AiStatus::Done(a) if a.error.is_none() => text::RULES_AND_AI,
+            _ => text::RULES_ONLY,
+        },
     );
 }
 
@@ -111,10 +115,10 @@ fn summary(h: &mut String, r: &CheckResult) {
                 format!(
                     "You gave {} prompts. The first prompt was: “{}”",
                     s.prompts.len(),
-                    esc(&asked)
+                    clean(&asked)
                 )
             } else {
-                format!("Your request was: “{}”", esc(&asked))
+                format!("Your request was: “{}”", clean(&asked))
             });
         }
     }
@@ -208,12 +212,15 @@ fn red_flags(h: &mut String, r: &CheckResult, diffs: &[FileDiff]) {
         if f.other_origin {
             let _ = write!(h, "<p class=\"note\">{}</p>", messages::OTHER_ORIGIN);
         }
+        if f.named_in_request {
+            let _ = write!(h, "<p class=\"note\">{}</p>", messages::NAMED_IN_REQUEST);
+        }
         if let Some(code) = file_context(f, diffs) {
             let _ = write!(h, "<pre class=\"diff\">{code}</pre>");
         } else if let Some(cmd) = command_context(f, r.session.as_ref()) {
             let _ = write!(h, "<pre>{cmd}</pre>");
         } else if !f.evidence.is_empty() {
-            let _ = write!(h, "<pre>{}</pre>", esc(&f.evidence));
+            let _ = write!(h, "<pre>{}</pre>", clean(&f.evidence));
         }
         h.push_str("</article>");
     }
@@ -223,6 +230,9 @@ fn red_flags(h: &mut String, r: &CheckResult, diffs: &[FileDiff]) {
 /// The changed lines around a file finding, as escaped HTML.
 fn file_context(f: &Finding, diffs: &[FileDiff]) -> Option<String> {
     let file = f.file.as_deref()?;
+    if redact::secret_file(file) {
+        return Some("[content removed: secret file]".into());
+    }
     let line = f.line?;
     let d = diffs.iter().find(|d| d.path == file)?;
     let near = |n: u32| n + CONTEXT_LINES >= line && n <= line + CONTEXT_LINES;
@@ -231,14 +241,14 @@ fn file_context(f: &Finding, diffs: &[FileDiff]) -> Option<String> {
         let _ = writeln!(
             out,
             "<span class=\"del\">-{n:>5}  {}</span>",
-            esc(&short(t, 160))
+            clean(&short(t, 160))
         );
     }
     for (n, t) in d.added.iter().filter(|(n, _)| near(*n)) {
         let _ = writeln!(
             out,
             "<span class=\"add\">+{n:>5}  {}</span>",
-            esc(&short(t, 160))
+            clean(&short(t, 160))
         );
     }
     (!out.is_empty()).then_some(out)
@@ -248,9 +258,13 @@ fn file_context(f: &Finding, diffs: &[FileDiff]) -> Option<String> {
 fn command_context(f: &Finding, s: Option<&Session>) -> Option<String> {
     let line = f.transcript_line?;
     let c = s?.commands.iter().find(|c| c.line == line)?;
-    let mut out = format!("$ {}", esc(&short(&c.command, 600)));
+    let mut out = format!("$ {}", clean(&short(&c.command, 600)));
     if let Some(e) = &c.error {
-        let _ = write!(out, "\n<span class=\"del\">{}</span>", esc(&short(e, 400)));
+        let _ = write!(
+            out,
+            "\n<span class=\"del\">{}</span>",
+            clean(&short(e, 400))
+        );
     }
     Some(out)
 }
@@ -261,7 +275,7 @@ fn claims(h: &mut String, r: &CheckResult) {
         .session
         .as_ref()
         .and_then(|s| s.final_message.as_deref())
-        .map(|m| esc(&short(m, 1500)))
+        .map(|m| clean(&short(m, 1500)))
         .unwrap_or_default();
     let _ = write!(
         h,
@@ -467,7 +481,7 @@ fn timeline(h: &mut String, s: Option<&Session>) {
             h,
             "<li class=\"{class}\"><span class=\"when\">{time} · line {}</span><span class=\"kind\">{label}</span><span class=\"what\">{}</span></li>",
             e.line,
-            esc(&e.text)
+            clean(&e.text)
         );
     }
     h.push_str("</ol></details></section>");
@@ -496,6 +510,12 @@ fn short(s: &str, max: usize) -> String {
     } else {
         t.to_string()
     }
+}
+
+/// Text from the transcript or the repository: secrets removed, then escaped.
+/// The report can go into a pull request or an email, so it must never show a secret.
+fn clean(s: &str) -> String {
+    esc(&redact::redact(s).0)
 }
 
 /// Escape text for HTML. All text from the transcript and the repository goes through this.
@@ -584,5 +604,42 @@ mod tests {
             esc("<script>alert('x')</script> & \"y\""),
             "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;y&quot;"
         );
+    }
+}
+
+#[cfg(test)]
+mod no_secrets {
+    use super::*;
+
+    #[test]
+    fn clean_removes_secrets_and_escapes() {
+        let out = clean("<b>API_KEY=\"sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX\"</b>");
+        assert!(!out.contains("ABCDEFGHIJ"), "{out}");
+        assert!(out.starts_with("&lt;b&gt;"), "{out}");
+    }
+
+    #[test]
+    fn secret_files_show_no_content() {
+        let f = Finding {
+            rule: crate::checks::Rule::SensitiveFile {
+                area: crate::checks::Area::Secrets,
+            },
+            severity: Severity::Medium,
+            file: Some(".env".into()),
+            line: Some(1),
+            transcript_line: None,
+            evidence: String::new(),
+            text: String::new(),
+            other_origin: false,
+            named_in_request: false,
+        };
+        let d = [FileDiff {
+            path: ".env".into(),
+            status: 'A',
+            added: vec![(1, "DB_PASSWORD=hunter2hunter2".into())],
+            removed: vec![],
+        }];
+        let out = file_context(&f, &d).unwrap();
+        assert!(!out.contains("hunter2"), "{out}");
     }
 }

@@ -131,8 +131,15 @@ fn with_location(f: &Finding) -> String {
         out.push(' ');
         out.push_str(OTHER_ORIGIN);
     }
+    if f.named_in_request {
+        out.push(' ');
+        out.push_str(NAMED_IN_REQUEST);
+    }
     out
 }
+
+/// The note for a sensitive file that the request named.
+pub const NAMED_IN_REQUEST: &str = "The request named this file, so this change is expected.";
 
 /// The note for a finding on a file that the agent did not touch.
 pub const OTHER_ORIGIN: &str =
@@ -271,6 +278,7 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 /// Fixed sentences in the report. They are here so that the tests examine them.
 pub mod report_text {
     pub const RULES_ONLY: &str = "This report uses rule checks only. Rule checks find facts in the transcript and in the changes, without AI.";
+    pub const RULES_AND_AI: &str = "This report uses rule checks and the AI check. The rule checks find facts. The AI check gives opinions.";
     pub const AI_OFF: &str = "The AI check is off. To turn it on, add the AI settings to the user settings file. The README tells you how.";
     pub const AI_RUNNING: &str =
         "The AI check runs now. Open the report again in one or two minutes.";
@@ -367,6 +375,7 @@ pub(crate) mod tests {
         Finding {
             text: finding_text(&rule),
             other_origin: false,
+            named_in_request: false,
             rule,
             severity,
             file: Some("src/auth/session_store.ts".into()),
@@ -409,6 +418,7 @@ pub(crate) mod tests {
         use report_text::*;
         for t in [
             RULES_ONLY,
+            RULES_AND_AI,
             AI_OFF,
             AI_RUNNING,
             AI_NOT_NEEDED,

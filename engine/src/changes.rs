@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -66,12 +66,39 @@ impl Changes {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .context("cannot start git; make sure that git is installed")?;
+    git_input(dir, args, None)
+}
+
+/// Run git. `input` goes to standard input, so that a long list of paths does
+/// not make the command line too long (Windows allows about 32,000 characters).
+fn git_input(dir: &Path, args: &[&str], input: Option<String>) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("cannot start git; make sure that git is installed")
+        } else {
+            anyhow::anyhow!("cannot start git: {e}")
+        }
+    })?;
+    // Write on a separate thread, so that a full output pipe cannot block the input.
+    let writer = match (input, child.stdin.take()) {
+        (Some(text), Some(mut stdin)) => Some(std::thread::spawn(move || {
+            use std::io::Write;
+            stdin.write_all(text.as_bytes())
+        })),
+        _ => None,
+    };
+    let out = child.wait_with_output().context("git did not finish")?;
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
     if !out.status.success() {
         bail!(
             "git {} failed: {}",
@@ -111,9 +138,13 @@ fn content_ids(root: &Path, paths: &[String]) -> Result<BTreeMap<String, Option<
     let existing: Vec<&String> = paths.iter().filter(|p| root.join(p).is_file()).collect();
     let mut ids = BTreeMap::new();
     if !existing.is_empty() {
-        let mut args = vec!["hash-object", "--"];
-        args.extend(existing.iter().map(|p| p.as_str()));
-        let out = git_text(root, &args)?;
+        let list: String = existing.iter().map(|p| format!("{p}\n")).collect();
+        let out = String::from_utf8_lossy(&git_input(
+            root,
+            &["hash-object", "--stdin-paths"],
+            Some(list),
+        )?)
+        .into_owned();
         for (path, id) in existing.iter().zip(out.lines()) {
             ids.insert((*path).clone(), Some(id.to_string()));
         }
@@ -383,6 +414,21 @@ impl Fnv {
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
         }
     }
+}
+
+/// All paths that existed when the session started (lowercase): the files in the
+/// start commit and the files that had changes. None if git fails.
+pub fn paths_at_start(start: &StartPoint) -> Option<Vec<String>> {
+    let mut paths: Vec<String> = start.dirty.keys().map(|p| p.to_lowercase()).collect();
+    if let Some(head) = &start.head {
+        let raw = git(
+            &start.repo_root,
+            &["ls-tree", "-r", "-z", "--name-only", head],
+        )
+        .ok()?;
+        paths.extend(split_nul(&raw).into_iter().map(|p| p.to_lowercase()));
+    }
+    Some(paths)
 }
 
 #[cfg(test)]

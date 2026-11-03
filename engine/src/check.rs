@@ -154,6 +154,11 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         session: session.as_ref(),
         diffs: &diffs,
         root: start.as_ref().map(|s| s.repo_root.as_path()),
+        start: if start_point_found {
+            start.as_ref()
+        } else {
+            None
+        },
     });
 
     // The AI check.
@@ -214,6 +219,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
                 evidence: c.evidence.clone(),
                 text: String::new(),
                 other_origin: false,
+                named_in_request: false,
             });
         }
         findings.sort_by_key(|f| f.severity);
@@ -240,7 +246,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     let first = last.verdict.is_none();
     let quiet = opts.background
         || if first {
-            changes.is_some() && session_files == 0 && findings.is_empty()
+            changes.is_some() && session.is_some() && session_files == 0 && findings.is_empty()
         } else {
             new.is_empty() && last.verdict == Some(verdict)
         };

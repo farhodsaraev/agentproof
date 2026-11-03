@@ -113,6 +113,19 @@ Development occurs in a Docker container. You do not install Rust on your comput
 
 The container cannot build the macOS version yet.
 
+## Tests
+
+1. Unit and scenario tests (in the container):
+   ```
+   docker compose run --rm dev sh -c "cd engine && cargo test"
+   ```
+2. End-to-end tests of the plugin on Windows (in Git Bash, after `sh scripts/build-plugin.sh`):
+   ```
+   bash tests/e2e/hooks.sh
+   bash tests/e2e/ai.sh
+   ```
+   `hooks.sh` runs the full hook sequence in a real Git repository. `ai.sh` tests the AI check with a fake Anthropic server on your computer. It sends no data to the internet.
+
 ## Folders
 
 | Folder | Contents |
@@ -122,6 +135,7 @@ The container cannot build the macOS version yet.
 | `plugin-ai/` | The optional plugin for the AI check with your Claude plan. |
 | `.claude-plugin/` | The local plugin marketplace. |
 | `scripts/` | Build scripts. |
+| `tests/e2e/` | End-to-end tests of the plugin. |
 | `.devcontainer/` | The development container. |
 
 ## Text rules

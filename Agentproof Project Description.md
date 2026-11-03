@@ -391,3 +391,38 @@ Facts found in the app test of Nov 3, 2026:
 - False alarm, fixed: two sessions in the same folder. A change from one session counted as work of the agent in the other session. Now a finding on a file that the agent did not touch gets the severity Low and a note: "a different session or a person possibly made this change". The agent touched a file if it edited the file with a file tool, named the file in a command, or ran a command that can change any file (for example a package manager or a formatter). Edits and commands of subagents count too: their transcripts are in a separate folder.
 - Missed claim, fixed: the fixed phrase list did not find "I also ran all tests and they pass". Now a sentence is a "tests pass" claim if it has a word that starts with "test", a word for success ("pass", "green", "succeed"), and no negative or uncertain word.
 - Plugins load only when a session starts. A new plugin is not active in a session that was already open.
+
+## Test report
+
+Comprehensive test, Nov 3, 2026. All results are from this computer (Windows 11) and the Linux container.
+
+| Layer | Result |
+| --- | --- |
+| Format check and clippy (all warnings are errors) | Pass |
+| Unit and scenario tests | 77 of 77 pass |
+| Release builds for Linux and Windows | Pass |
+| End-to-end hook tests on Windows (`tests/e2e/hooks.sh`): start, no change, good agent, bad agent, news-only messages, strict mode, report, JSON, manual check, errors, path with a space and a non-ASCII letter | 38 of 38 pass |
+| End-to-end AI tests on Windows with a fake Anthropic server (`tests/e2e/ai.sh`): headers, model, fallbacks, structured output, secret removal, saved result, background run, missing key, repository cannot turn on the AI check, no secrets in the report | 27 of 27 pass |
+| Linux engine and launcher in the container | Pass |
+| Report in the browser, also at a narrow width | Pass |
+| Real sessions of three projects (read only) | Pass after fixes. A check of a 127 MB transcript takes 2.2 seconds |
+
+Problems that the test found and that are now fixed:
+
+1. A project with many changed files failed with "The filename or extension is too long". The engine gave all file names to one Git command. Now it sends them through standard input.
+2. `curl ... || bash start.sh` counted as "a downloaded script that runs immediately". The rule now accepts only a single pipe (`|`), not `||`.
+3. Deletes of temporary and build folders counted as dangerous, for example `S=.../scratchpad/x; rm -rf "$S"`. The rule now reads simple variables, and knows temporary and build folders.
+4. Redirections such as `2>&1` counted as folders to delete.
+5. Text inside a here-document (`cat > f <<'EOF' ... EOF`) counted as commands.
+6. A delete of a folder that the session made counted as dangerous. With a start point, such a delete is now cleanup and not a finding.
+7. With a missing transcript and no changes, Agentproof stayed silent. Now it always reports that it cannot read the transcript.
+8. A sensitive file that the request names counted as a Medium finding. Now it is Low, with the note "The request named this file".
+9. The report showed secrets from the changes, for example a line of a `.env` file. Now the report and the JSON file remove secrets, and they never show the content of secret files.
+10. The report always said "rule checks only", also after an AI check.
+11. Markers showed without the closing bracket, for example `#[ignore`.
+
+Known limits after the test:
+
+- Sessions that started before the plugin was installed have no start point. For them, a delete of a folder that the session made still counts as dangerous.
+- `sudo` on a remote server (through `ssh`) counts as a dangerous command. This is correct, but the message does not say that the server is remote.
+- Not tested: a real API key, the `agentproof-ai` plugin in a new session, and macOS.
