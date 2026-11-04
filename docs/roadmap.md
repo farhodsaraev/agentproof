@@ -93,7 +93,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 
 | ID | Work | Blockers | Effort | Done when | Status |
 |---|---|---|---|---|---|
-| A1 | **Read test output** (n01 core, weeks 1 and 2). Keep the first 2 KB and the last 8 KB of the output of each test command, also in subagents. Mark piped runs "exit code hidden". Parse the summaries of pytest, jest, vitest, cargo and go. Add the test-command forms that the engine does not know: `npm run test:*`, `bun run test`, `python manage.py test`, `nx test` and others. Treat zero-test runs as "not run". Do not trust exit code 0 from a background command until its summary appears | 1, 8 | L | Experiments e1 and e7 give "do not trust this work". A "tests pass" claim after `npm run test:unit` gives no finding. No report says "the last test run passed" for a piped run. The hook check takes less than 2 s on the largest real session | Done, 4 November 2026. Commit: not yet |
+| A1 | **Read test output** (n01 core, weeks 1 and 2). Keep the first 2 KB and the last 8 KB of the output of each test command, also in subagents. Mark piped runs "exit code hidden". Parse the summaries of pytest, jest, vitest, cargo and go. Add the test-command forms that the engine does not know: `npm run test:*`, `bun run test`, `python manage.py test`, `nx test` and others. Treat zero-test runs as "not run". Do not trust exit code 0 from a background command until its summary appears | 1, 8 | L | Experiments e1 and e7 give "do not trust this work". A "tests pass" claim after `npm run test:unit` gives no finding. No report says "the last test run passed" for a piped run. The hook check takes less than 2 s on the largest real session | Done, 4 November 2026, commit `f95d880` |
 | A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Not started |
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Not started |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Not started |
@@ -103,7 +103,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 
 ### A1 result (4 November 2026)
 
-A1 is done in the working copy of the repository. It is not in a commit yet.
+A1 is done. The change is in commit `f95d880`.
 
 **What changed:**
 
@@ -526,3 +526,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 4 November 2026: first version, from the product analysis.
 - 4 November 2026: second version, after 3 reviews (code accuracy, source fidelity and ASD-STE100). New gate condition: items B1 to B9 have the status Done before the soft launch.
 - 4 November 2026: Phase A started. A1 is done. The section "A1 result" gives the changes, the test results and the limits that stay.
+- 4 November 2026: the documents and A1 are in commit `f95d880`.
