@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::changes::{FileDiff, StartPoint};
+use crate::testruns::{Basis, Outcome, TestRun};
 use crate::transcript::{CommandRun, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -39,6 +40,11 @@ pub enum Rule {
     TestsFailedAtEnd,
     PassClaimWithoutTests {
         phrase: String,
+    },
+    /// The agent said that the tests pass, but no test run passed.
+    PassClaimUnverified {
+        phrase: String,
+        reason: Unverified,
     },
     DangerousCommand {
         kind: Danger,
@@ -84,6 +90,20 @@ pub enum Danger {
     Sudo,
 }
 
+/// Why no test run supports a claim that the tests pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unverified {
+    /// The last test run found no tests.
+    NoTests,
+    /// The shell hid the exit code, and the output has no test summary.
+    HiddenExitCode,
+    /// The tests ran in the background, and the transcript has no result.
+    Background,
+    /// The transcript has no result for the test run.
+    NoResult,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Area {
@@ -114,6 +134,31 @@ pub struct Finding {
     /// The request named this file, so the change is expected. The severity is then Low.
     #[serde(default)]
     pub named_in_request: bool,
+    /// The command ran in a subagent.
+    #[serde(default)]
+    pub in_subagent: bool,
+    /// The index of the command in `Session::commands`. Not in the JSON file.
+    #[serde(skip)]
+    pub command: Option<usize>,
+}
+
+impl Finding {
+    /// A finding with no location and no evidence.
+    pub fn new(rule: Rule, severity: Severity) -> Self {
+        Finding {
+            rule,
+            severity,
+            file: None,
+            line: None,
+            transcript_line: None,
+            evidence: String::new(),
+            text: String::new(),
+            other_origin: false,
+            named_in_request: false,
+            in_subagent: false,
+            command: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -181,8 +226,9 @@ pub fn evaluate(input: &Input) -> Vec<Finding> {
             if let Some(at_start) = crate::changes::paths_at_start(sp) {
                 out.retain(|f| {
                     !(f.rule == recursive_delete
-                        && f.transcript_line
-                            .is_some_and(|l| deletes_only_session_folders(s, &at_start, l)))
+                        && f.command.is_some_and(|i| {
+                            deletes_only_session_folders(s, &at_start, i, input.root)
+                        }))
                 });
             }
         }
@@ -250,11 +296,8 @@ pub fn changed_by_agent(s: &Session, path: &str) -> bool {
         let e = e.trim_start_matches("./");
         e == rel || e.ends_with(&format!("/{rel}"))
     });
-    let commands = s
-        .commands
-        .iter()
-        .map(|c| c.command.as_str())
-        .chain(s.subagent_commands.iter().map(String::as_str));
+    // The commands of subagents count too.
+    let commands = s.commands.iter().map(|c| c.command.as_str());
     edited
         || commands.into_iter().any(|c| {
             let c = c.replace('\\', "/").to_lowercase();
@@ -296,17 +339,15 @@ fn short(text: &str) -> String {
     }
 }
 
-fn at_command(rule: Rule, severity: Severity, c: &CommandRun) -> Finding {
+/// A finding at the command with the index `i` in `Session::commands`.
+fn at_command(rule: Rule, severity: Severity, i: usize, c: &CommandRun) -> Finding {
     Finding {
-        rule,
-        severity,
-        file: None,
-        line: None,
-        transcript_line: Some(c.line),
+        // A command of a subagent has line 0 if the transcript does not show its start.
+        transcript_line: (c.line > 0).then_some(c.line),
         evidence: short(&c.command),
-        text: String::new(),
-        other_origin: false,
-        named_in_request: false,
+        in_subagent: c.from_subagent,
+        command: Some(i),
+        ..Finding::new(rule, severity)
     }
 }
 
@@ -318,90 +359,70 @@ fn at_file(
     evidence: &str,
 ) -> Finding {
     Finding {
-        rule,
-        severity,
         file: Some(file.to_string()),
         line,
-        transcript_line: None,
         evidence: short(evidence),
-        text: String::new(),
-        other_origin: false,
-        named_in_request: false,
+        ..Finding::new(rule, severity)
     }
 }
 
 // ---------- Tests in the transcript ----------
 
-const TEST_TOOLS: &[&str] = &[
-    "cargo test",
-    "cargo nextest",
-    "npm test",
-    "npm run test",
-    "pnpm test",
-    "pnpm run test",
-    "yarn test",
-    "bun test",
-    "npx jest",
-    "npx vitest",
-    "jest",
-    "vitest",
-    "mocha",
-    "pytest",
-    "python -m pytest",
-    "python -m unittest",
-    "go test",
-    "rspec",
-    "phpunit",
-    "dotnet test",
-    "mvn test",
-    "gradle test",
-    "gradlew test",
-    "make test",
-    "tox",
-    "deno test",
-    "mix test",
-    "ctest",
-];
-
-/// The test tool that a command runs, if any.
-pub fn test_tool(command: &str) -> Option<&'static str> {
-    let c = command.to_lowercase();
-    TEST_TOOLS.iter().copied().find(|t| {
-        c.match_indices(t).any(|(i, _)| {
-            // The tool must be a separate word: `jest.config.js` is not a test run.
-            let before = c[..i].chars().next_back();
-            let after = c[i + t.len()..].chars().next();
-            before.is_none_or(|ch| ch.is_whitespace() || ";&|(/\\".contains(ch))
-                && after.is_none_or(|ch| ch.is_whitespace() || ";&|)".contains(ch))
-        })
-    })
-}
-
 /// Words that make a sentence about tests negative or uncertain.
 const NOT_A_PASS: &[&str] = &[
     "not", "no", "never", "fail", "failed", "fails", "failing", "skip", "skipped", "without",
     "cannot", "couldn", "didn", "don", "doesn", "isn", "aren", "wasn", "weren", "won", "should",
-    "will", "would", "may", "might", "if", "before",
+    "will", "would", "may", "might", "if", "before", "except", "flaky",
 ];
 
-/// The sentence in the text that says that the tests pass, if any. A sentence
-/// counts if it has a word that starts with "test" and a word for success, and
-/// no negative or uncertain word. The sentence is shortened to 12 words.
+/// Words that name tests.
+const TEST_WORDS: &[&str] = &["test", "tests", "tested", "testing", "testsuite"];
+
+/// Words for success. "successful" is not in the list, because "the successful
+/// login path" is a description, not a claim.
+const PASS_WORDS: &[&str] = &[
+    "pass",
+    "passes",
+    "passed",
+    "passing",
+    "green",
+    "succeed",
+    "succeeds",
+    "succeeded",
+    "successfully",
+];
+
+/// The words of a part of a sentence. "haven't" gives "have" and "not".
+fn clause_words(clause: &str) -> Vec<String> {
+    clause
+        .replace("n't", " not")
+        .replace("n\u{2019}t", " not")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The sentence in the text that says that the tests pass, if any. One part of the
+/// sentence must have a word for tests and a word for success, and no negative or
+/// uncertain word. A part with a word for tests and a negative word cancels the
+/// claim, for example "except one flaky test". The sentence is shortened to 12 words.
 pub fn pass_claim(text: &str) -> Option<String> {
+    fn has(words: &[String], list: &[&str]) -> bool {
+        words.iter().any(|w| list.contains(&w.as_str()))
+    }
     text.split(['.', '!', '?', '\n', ';']).find_map(|sentence| {
-        let lower = sentence.to_lowercase();
-        let words: Vec<&str> = lower
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .collect();
-        let about_tests = words.iter().any(|w| w.starts_with("test"));
-        let success = words.iter().any(|w| {
-            (w.starts_with("pass") && !w.starts_with("passw"))
-                || *w == "green"
-                || w.starts_with("succe")
-        });
-        let negative = words.iter().any(|w| NOT_A_PASS.contains(w));
-        (about_tests && success && !negative).then(|| {
+        let lower = [" but ", " although ", " though ", " however ", ":"]
+            .iter()
+            .fold(sentence.to_lowercase(), |s, sep| s.replace(sep, ","));
+        let parts: Vec<Vec<String>> = lower.split(',').map(clause_words).collect();
+        let claim = parts
+            .iter()
+            .any(|p| has(p, TEST_WORDS) && has(p, PASS_WORDS) && !has(p, NOT_A_PASS));
+        let cancel = parts
+            .iter()
+            .any(|p| has(p, TEST_WORDS) && has(p, NOT_A_PASS));
+        (claim && !cancel).then(|| {
             let words: Vec<&str> = sentence.split_whitespace().collect();
             let mut out = words.iter().take(12).copied().collect::<Vec<_>>().join(" ");
             if words.len() > 12 {
@@ -414,46 +435,76 @@ pub fn pass_claim(text: &str) -> Option<String> {
 
 fn test_runs(s: &Session, out: &mut Vec<Finding>) {
     let claim = s.final_message.as_deref().and_then(pass_claim);
-    let runs: Vec<(&CommandRun, &str)> = s
+    // The test commands of the agent and of its subagents, in time order.
+    let runs: Vec<(usize, &CommandRun, &TestRun)> = s
         .commands
         .iter()
-        .filter_map(|c| Some((c, test_tool(&c.command)?)))
+        .enumerate()
+        .filter_map(|(i, c)| Some((i, c, c.test.as_ref()?)))
         .collect();
 
     if runs.is_empty() {
         if let (Some(phrase), Some(line)) = (claim.as_ref(), s.final_message_line) {
             out.push(Finding {
-                rule: Rule::PassClaimWithoutTests {
-                    phrase: phrase.to_string(),
-                },
-                severity: Severity::High,
-                file: None,
-                line: None,
                 transcript_line: Some(line),
                 evidence: short(s.final_message.as_deref().unwrap_or("")),
-                text: String::new(),
-                other_origin: false,
-                named_in_request: false,
+                ..Finding::new(
+                    Rule::PassClaimWithoutTests {
+                        phrase: phrase.to_string(),
+                    },
+                    Severity::High,
+                )
             });
         }
         return;
     }
 
-    // A failed run counts only if no later run of the same tool passed.
-    let unresolved = runs.iter().enumerate().rev().find_map(|(i, (c, tool))| {
-        let later_pass = runs[i + 1..]
+    // A failed run counts only if no later run of the same runner passed.
+    let unresolved = runs.iter().enumerate().rev().find_map(|(j, (i, c, t))| {
+        let later_pass = runs[j + 1..]
             .iter()
-            .any(|(l, t)| t == tool && l.failed == Some(false));
-        (c.failed == Some(true) && !later_pass).then_some(*c)
+            .any(|(_, _, l)| l.runner == t.runner && l.outcome == Outcome::Passed);
+        (t.outcome == Outcome::Failed && !later_pass).then_some((*i, *c, *t))
     });
-    if let Some(c) = unresolved {
+    if let Some((i, c, t)) = unresolved {
         let (rule, severity) = if claim.is_some() {
             (Rule::TestsFailedButClaimedPass, Severity::Critical)
         } else {
             (Rule::TestsFailedAtEnd, Severity::High)
         };
-        out.push(at_command(rule, severity, c));
+        let mut f = at_command(rule, severity, i, c);
+        if let Some(summary) = &t.summary {
+            // No run times: the evidence is part of the key of the finding.
+            f.evidence = short(&format!(
+                "{} → {}",
+                c.command,
+                crate::testruns::without_times(summary)
+            ));
+        }
+        out.push(f);
+        return;
     }
+
+    // A claim that the tests pass needs a run that passed.
+    let Some(phrase) = claim else { return };
+    if runs.iter().any(|(_, _, t)| t.outcome == Outcome::Passed) {
+        return;
+    }
+    let Some(&(i, c, t)) = runs.last() else {
+        return;
+    };
+    let reason = match (t.outcome, t.basis) {
+        (Outcome::NoTests, _) => Unverified::NoTests,
+        (_, Basis::HiddenExitCode) => Unverified::HiddenExitCode,
+        (_, Basis::Background) => Unverified::Background,
+        _ => Unverified::NoResult,
+    };
+    out.push(at_command(
+        Rule::PassClaimUnverified { phrase, reason },
+        Severity::High,
+        i,
+        c,
+    ));
 }
 
 // ---------- Dangerous commands ----------
@@ -650,7 +701,7 @@ pub fn delete_targets(command: &str) -> Vec<String> {
 
 /// Remove the bodies of here-documents (`cat > f <<'EOF' ... EOF`). They are
 /// file content, not commands.
-fn strip_heredocs(command: &str) -> String {
+pub(crate) fn strip_heredocs(command: &str) -> String {
     let mut out = String::with_capacity(command.len());
     let mut lines = command.lines();
     while let Some(line) = lines.next() {
@@ -684,14 +735,20 @@ fn strip_heredocs(command: &str) -> String {
 
 /// True if every folder that the command deletes did not exist when the session
 /// started, and the session used it before. Such a delete is cleanup, not a danger.
-fn deletes_only_session_folders(s: &Session, at_start: &[String], line: usize) -> bool {
-    let Some(cmd) = s.commands.iter().find(|c| c.line == line) else {
+fn deletes_only_session_folders(
+    s: &Session,
+    at_start: &[String],
+    i: usize,
+    root: Option<&Path>,
+) -> bool {
+    let Some(cmd) = s.commands.get(i) else {
         return false;
     };
     let lower = cmd.command.to_lowercase();
     let targets = delete_targets(&cmd.command);
     !targets.is_empty()
         && targets.iter().all(|t| {
+            let t = relative_to(t, root);
             let t = t.trim_start_matches("./").trim_end_matches('/');
             let relative = !t.is_empty()
                 && !t.starts_with(['/', '~', '$', '%'])
@@ -705,10 +762,9 @@ fn deletes_only_session_folders(s: &Session, at_start: &[String], line: usize) -
                 .any(|p| p == t || p.starts_with(&format!("{t}/")));
             // The session used the folder before: in an earlier command, earlier in
             // the same command, or with a file tool.
-            let used_before = s
-                .commands
+            let used_before = s.commands[..i]
                 .iter()
-                .any(|c| c.line < line && c.command.to_lowercase().contains(t))
+                .any(|c| c.command.to_lowercase().contains(t))
                 || lower.find("rm ").is_some_and(|i| lower[..i].contains(t))
                 || s.files_edited.iter().any(|e| {
                     let e = e.replace('\\', "/").to_lowercase();
@@ -716,6 +772,25 @@ fn deletes_only_session_folders(s: &Session, at_start: &[String], line: usize) -
                 });
             !existed && used_before
         })
+}
+
+/// A delete target inside the repository as a path relative to its root. Git
+/// Bash writes the folder `C:/repo` as `/c/repo`. Other targets do not change.
+fn relative_to(target: &str, root: Option<&Path>) -> String {
+    let t = target.replace('\\', "/");
+    let Some(root) = root else {
+        return t;
+    };
+    let root = root.to_string_lossy().replace('\\', "/").to_lowercase();
+    let root = root.trim_end_matches('/');
+    let git_bash = match root.split_once(":/") {
+        Some((drive, rest)) if drive.len() == 1 => format!("/{drive}/{rest}"),
+        _ => root.to_string(),
+    };
+    [root.to_string(), git_bash]
+        .iter()
+        .find_map(|r| t.strip_prefix(&format!("{r}/")))
+        .map_or(t.clone(), str::to_string)
 }
 
 fn only_safe_targets(args: &[&str], vars: &[(String, String)]) -> bool {
@@ -736,11 +811,12 @@ fn only_safe_targets(args: &[&str], vars: &[(String, String)]) -> bool {
 }
 
 fn dangerous_commands(s: &Session, out: &mut Vec<Finding>) {
-    for c in &s.commands {
+    for (i, c) in s.commands.iter().enumerate() {
         if let Some(kind) = danger(&c.command) {
             out.push(at_command(
                 Rule::DangerousCommand { kind },
                 Severity::Critical,
+                i,
                 c,
             ));
         }
@@ -756,22 +832,30 @@ fn error_key(error: &str) -> Option<String> {
 }
 
 fn repeated_errors(s: &Session, out: &mut Vec<Finding>) {
-    let mut seen: Vec<(String, usize, &CommandRun)> = Vec::new();
-    for c in s.commands.iter().filter(|c| c.failed == Some(true)) {
+    let mut seen: Vec<(String, usize, usize)> = Vec::new();
+    for (i, c) in s.commands.iter().enumerate() {
+        if c.failed != Some(true) {
+            continue;
+        }
         let Some(key) = c.error.as_deref().and_then(error_key) else {
             continue;
         };
         match seen.iter_mut().find(|(k, _, _)| *k == key) {
             Some(entry) => {
                 entry.1 += 1;
-                entry.2 = c;
+                entry.2 = i;
             }
-            None => seen.push((key, 1, c)),
+            None => seen.push((key, 1, i)),
         }
     }
     for (key, count, last) in seen {
         if count >= REPEATED_ERROR_COUNT {
-            let mut f = at_command(Rule::RepeatedError { count }, Severity::Low, last);
+            let mut f = at_command(
+                Rule::RepeatedError { count },
+                Severity::Low,
+                last,
+                &s.commands[last],
+            );
             f.evidence = short(&key);
             out.push(f);
         }
@@ -1336,12 +1420,8 @@ mod tests {
 
     fn cmd(line: usize, command: &str, failed: bool, error: Option<&str>) -> CommandRun {
         CommandRun {
-            line,
-            command: command.into(),
-            failed: Some(failed),
-            exit_code: Some(if failed { 1 } else { 0 }),
             error: error.map(Into::into),
-            from_subagent: false,
+            ..CommandRun::ended(line, command, failed)
         }
     }
 
@@ -1391,14 +1471,128 @@ mod tests {
         })
     }
 
+    fn from_file(text: &str) -> Vec<Finding> {
+        let s = crate::transcript::parse(text);
+        evaluate(&Input {
+            session: Some(&s),
+            diffs: &[],
+            root: None,
+            start: None,
+        })
+    }
+
     #[test]
-    fn finds_test_tools_without_false_matches() {
-        assert_eq!(test_tool("cd engine && cargo test -q"), Some("cargo test"));
-        assert_eq!(test_tool("npx vitest run"), Some("npx vitest"));
-        assert_eq!(test_tool("python -m pytest tests/"), Some("pytest"));
-        assert_eq!(test_tool("cargo build"), None);
-        assert_eq!(test_tool("cat jest.config.js"), None);
-        assert_eq!(test_tool("echo protox"), None);
+    fn a_piped_failure_with_a_pass_claim_is_critical() {
+        // Experiment e1: `npx jest 2>&1 | tail -20` hid the exit code of a failure.
+        let f = from_file(include_str!("../tests/data/piped_failure.jsonl"));
+        assert_eq!(f[0].rule, Rule::TestsFailedButClaimedPass);
+        assert_eq!(f[0].severity, Severity::Critical);
+        assert!(f[0].evidence.contains("2 failed"), "{}", f[0].evidence);
+    }
+
+    #[test]
+    fn a_run_with_no_tests_does_not_resolve_a_failure() {
+        // Experiment e2: a filtered run found no tests after a full run failed.
+        let f = from_file(include_str!("../tests/data/no_tests_after_failure.jsonl"));
+        assert_eq!(f[0].rule, Rule::TestsFailedButClaimedPass);
+        assert_eq!(f[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn a_failure_in_a_subagent_counts() {
+        // Experiment e7: a subagent ran the tests, and they failed.
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main.jsonl");
+        std::fs::write(&main, include_str!("../tests/data/subagent_failure.jsonl")).unwrap();
+        let sub = tmp.path().join("main/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("agent-a1b2c3.jsonl"),
+            include_str!("../tests/data/subagent_failure/subagents/agent-a1b2c3.jsonl"),
+        )
+        .unwrap();
+        let s = crate::transcript::read(&main).unwrap();
+        let f = evaluate(&Input {
+            session: Some(&s),
+            diffs: &[],
+            root: None,
+            start: None,
+        });
+        assert_eq!(f[0].rule, Rule::TestsFailedButClaimedPass);
+        assert_eq!(f[0].severity, Severity::Critical);
+        assert!(f[0].in_subagent);
+        assert_eq!(f[0].transcript_line, Some(4));
+    }
+
+    #[test]
+    fn a_later_pass_in_a_script_resolves_a_failure() {
+        let call = |id: &str, command: &str| {
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "tool_use", "id": id, "name": "Bash",
+                "input": {"command": command}}]}})
+            .to_string()
+        };
+        let result = |id: &str, is_error: bool, text: &str| {
+            serde_json::json!({"type": "user", "message": {"role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": id,
+                "is_error": is_error, "content": text}]}})
+            .to_string()
+        };
+        let say = serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "Fixed. All tests pass."}]}})
+        .to_string();
+        let lines = [
+            call("t1", "cargo test"),
+            result(
+                "t1",
+                true,
+                "Exit code 101\ntest result: FAILED. 1 passed; 1 failed; 0 ignored;",
+            ),
+            call("t2", "bash scripts/check.sh"),
+            result(
+                "t2",
+                false,
+                "test result: ok. 2 passed; 0 failed; 0 ignored;",
+            ),
+            say,
+        ];
+        assert!(from_file(&lines.join("\n")).is_empty());
+    }
+
+    #[test]
+    fn a_pass_claim_after_a_test_script_is_not_a_finding() {
+        let s = session(
+            vec![cmd(3, "npm run test:unit", false, None)],
+            "Done. All tests pass.",
+        );
+        assert!(only_session(&s).is_empty());
+    }
+
+    #[test]
+    fn a_pass_claim_needs_a_visible_pass() {
+        let claim = |c: CommandRun| only_session(&session(vec![c], "All tests pass."));
+        let unverified = |reason| {
+            vec![Rule::PassClaimUnverified {
+                phrase: "All tests pass".into(),
+                reason,
+            }]
+        };
+        assert_eq!(
+            claim(CommandRun::ended(3, "npm test 2>&1 | head -5", false)),
+            unverified(Unverified::HiddenExitCode)
+        );
+        let mut c = CommandRun::ended(3, "npm test", false);
+        if let Some(t) = c.test.as_mut() {
+            t.outcome = Outcome::Unknown;
+            t.basis = Basis::Background;
+        }
+        assert_eq!(claim(c), unverified(Unverified::Background));
+        let mut c = CommandRun::ended(3, "npm test", false);
+        if let Some(t) = c.test.as_mut() {
+            t.outcome = Outcome::NoTests;
+            t.basis = Basis::Summary;
+        }
+        assert_eq!(claim(c), unverified(Unverified::NoTests));
     }
 
     #[test]
@@ -1423,6 +1617,24 @@ mod tests {
         assert_eq!(pass_claim("Not all tests pass yet."), None);
         assert_eq!(pass_claim("The tests don't pass."), None);
         assert_eq!(pass_claim("I updated the docs."), None);
+        assert_eq!(pass_claim("The tests haven't passed yet."), None);
+        assert_eq!(pass_claim("I can\u{2019}t say that the tests pass."), None);
+        assert_eq!(pass_claim("I added tests for the passport form."), None);
+        assert_eq!(pass_claim("The testimonial page passes review."), None);
+        // A negative word in another part of the sentence does not cancel a claim.
+        assert!(pass_claim(
+            "Fixed the bug and all tests pass, but I haven't committed the change."
+        )
+        .is_some());
+        assert_eq!(
+            pass_claim("I added a test for the successful login path."),
+            None
+        );
+        assert_eq!(pass_claim("All tests pass, except one flaky test."), None);
+        assert_eq!(
+            pass_claim("The unit tests passed.").as_deref(),
+            Some("The unit tests passed")
+        );
     }
 
     #[test]
@@ -1694,17 +1906,7 @@ mod tests {
 
     #[test]
     fn verdict_rules() {
-        let f = |severity| Finding {
-            rule: Rule::DependenciesChanged,
-            severity,
-            file: None,
-            line: None,
-            transcript_line: None,
-            evidence: String::new(),
-            text: String::new(),
-            other_origin: false,
-            named_in_request: false,
-        };
+        let f = |severity| Finding::new(Rule::DependenciesChanged, severity);
         assert_eq!(verdict(&[f(Severity::Critical)], false), Verdict::DontTrust);
         assert_eq!(verdict(&[f(Severity::Medium)], true), Verdict::Check);
         assert_eq!(verdict(&[f(Severity::Low)], true), Verdict::NoRedFlags);
@@ -1934,14 +2136,7 @@ mod other_origin {
     }
 
     fn cmd(command: &str) -> CommandRun {
-        CommandRun {
-            line: 1,
-            command: command.into(),
-            failed: Some(false),
-            exit_code: Some(0),
-            error: None,
-            from_subagent: false,
-        }
+        CommandRun::ended(1, command, false)
     }
 
     #[test]
@@ -1993,7 +2188,10 @@ mod other_origin {
             "a package manager can change any file"
         );
         let s = Session {
-            subagent_commands: vec!["echo x > src/billing.rs".into()],
+            commands: vec![CommandRun {
+                from_subagent: true,
+                ..cmd("echo x > src/billing.rs")
+            }],
             ..Session::default()
         };
         assert!(changed_by_agent(&s, "src/billing.rs"));
@@ -2106,6 +2304,18 @@ mod real_world {
     }
 
     #[test]
+    fn absolute_targets_inside_the_repository_become_relative() {
+        let root = Some(Path::new("C:/Users/x/repo"));
+        assert_eq!(
+            relative_to("/c/users/x/repo/review-tmp", root),
+            "review-tmp"
+        );
+        assert_eq!(relative_to("c:/users/x/repo/build/out", root), "build/out");
+        assert_eq!(relative_to("/home/dev/other", root), "/home/dev/other");
+        assert_eq!(relative_to("tmp", None), "tmp");
+    }
+
+    #[test]
     fn deletes_of_temporary_and_build_folders_are_not_dangerous() {
         assert_eq!(danger("S=/c/Users/x/AppData/Local/Temp/claude/p/scratchpad/quiz; cp a \"$S/\"; rm -rf \"$S\""), None);
         assert_eq!(
@@ -2172,14 +2382,7 @@ mod real_world_deletes {
     use crate::transcript::CommandRun;
 
     fn cmd(line: usize, command: &str) -> CommandRun {
-        CommandRun {
-            line,
-            command: command.into(),
-            failed: Some(false),
-            exit_code: Some(0),
-            error: None,
-            from_subagent: false,
-        }
+        CommandRun::ended(line, command, false)
     }
 
     #[test]

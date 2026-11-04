@@ -2,7 +2,8 @@
 //! Simplified Technical English: max 20 words in an instruction, max 25 words
 //! in a description, one topic per sentence. The tests below check the length.
 
-use crate::checks::{Area, Danger, Finding, Rule, Severity, Verdict};
+use crate::checks::{Area, Danger, Finding, Rule, Severity, Unverified, Verdict};
+use crate::testruns::{Basis, Outcome, TestRun};
 
 /// The number of findings in the short message. All findings are in the report.
 const SHOWN_FINDINGS: usize = 3;
@@ -147,11 +148,16 @@ pub const OTHER_ORIGIN: &str =
 
 /// The location of a finding, without punctuation.
 pub fn location_text(f: &Finding) -> Option<String> {
-    match (&f.file, f.line, f.transcript_line) {
+    let place = match (&f.file, f.line, f.transcript_line) {
         (Some(file), Some(line), _) if line > 0 => Some(format!("{file}, line {line}")),
         (Some(file), _, _) => Some(file.clone()),
         (None, _, Some(t)) => Some(format!("transcript line {t}")),
         _ => None,
+    };
+    match (place, f.in_subagent) {
+        (Some(p), true) => Some(format!("{p}, in a subagent")),
+        (None, true) => Some("in a subagent".into()),
+        (place, false) => place,
     }
 }
 
@@ -177,10 +183,16 @@ pub fn finding_text(rule: &Rule) -> String {
         Rule::TestsFailedButClaimedPass => {
             "The tests failed, but the agent said that the tests pass.".into()
         }
-        Rule::TestsFailedAtEnd => "The last run of the tests failed.".into(),
+        Rule::TestsFailedAtEnd => {
+            "A test run failed, and no later run with the same test runner shows a pass.".into()
+        }
         Rule::PassClaimWithoutTests { phrase } => {
             format!("The agent said \"{phrase}\", but it did not run the tests.")
         }
+        Rule::PassClaimUnverified { phrase, reason } => format!(
+            "The agent said \"{phrase}\", but no test run passed. {}",
+            unverified_text(*reason)
+        ),
         Rule::DangerousCommand { kind } => {
             format!("The agent ran a dangerous command: {}.", danger_text(*kind))
         }
@@ -212,6 +224,52 @@ pub fn finding_text(rule: &Rule) -> String {
             "AI opinion: there is no evidence for the claim \"{}\". {reason}",
             short_claim(claim)
         ),
+    }
+}
+
+fn unverified_text(u: Unverified) -> &'static str {
+    match u {
+        Unverified::NoTests => "The last test run found no tests.",
+        Unverified::HiddenExitCode => {
+            "The shell hid the exit code, and the output has no test summary."
+        }
+        Unverified::Background => {
+            "The tests ran in the background, and the transcript has no result."
+        }
+        Unverified::NoResult => "The transcript has no result for the test run.",
+    }
+}
+
+/// The result of the last test run, for the report. It says where the result comes from.
+pub fn last_test_run(t: &TestRun) -> String {
+    let line = t.summary.as_deref().map(short_claim);
+    let summary = line
+        .as_deref()
+        .map(|l| format!(" The summary line is “{l}”."))
+        .unwrap_or_default();
+    match (t.outcome, t.basis, line) {
+        (Outcome::Passed, Basis::Summary, Some(l)) => {
+            format!("The summary of the last test run shows a pass: “{l}”.")
+        }
+        (Outcome::Failed, Basis::Summary, Some(l)) => {
+            format!("The summary of the last test run shows a failure: “{l}”.")
+        }
+        (Outcome::Passed, _, _) => "The last test run passed with exit code 0.".into(),
+        (Outcome::Failed, _, _) => {
+            format!("The last test run failed. The command ended with an error.{summary}")
+        }
+        (Outcome::NoTests, _, _) => format!("The last test run found no tests.{summary}"),
+        (Outcome::Unknown, Basis::HiddenExitCode, _) => format!(
+            "The result of the last test run is not known. {}",
+            unverified_text(Unverified::HiddenExitCode)
+        ),
+        (Outcome::Unknown, Basis::Background, _) => format!(
+            "The result of the last test run is not known. {}",
+            unverified_text(Unverified::Background)
+        ),
+        (Outcome::Unknown, _, _) => {
+            "The result of the last test run is not in the transcript.".into()
+        }
     }
 }
 
@@ -328,6 +386,22 @@ pub(crate) mod tests {
             Rule::PassClaimWithoutTests {
                 phrase: "all tests pass".into(),
             },
+            Rule::PassClaimUnverified {
+                phrase: "all tests pass".into(),
+                reason: Unverified::NoTests,
+            },
+            Rule::PassClaimUnverified {
+                phrase: "all tests pass".into(),
+                reason: Unverified::HiddenExitCode,
+            },
+            Rule::PassClaimUnverified {
+                phrase: "all tests pass".into(),
+                reason: Unverified::Background,
+            },
+            Rule::PassClaimUnverified {
+                phrase: "all tests pass".into(),
+                reason: Unverified::NoResult,
+            },
             Rule::DependenciesChanged,
             Rule::SuppressionsAdded {
                 count: 3,
@@ -374,15 +448,82 @@ pub(crate) mod tests {
     fn finding(rule: Rule, severity: Severity) -> Finding {
         Finding {
             text: finding_text(&rule),
-            other_origin: false,
-            named_in_request: false,
-            rule,
-            severity,
             file: Some("src/auth/session_store.ts".into()),
             line: Some(120),
-            transcript_line: None,
-            evidence: String::new(),
+            ..Finding::new(rule, severity)
         }
+    }
+
+    #[test]
+    fn test_run_texts_follow_ste100_length_limits() {
+        let long = "===== 1 failed, 10 passed, 3 warnings, 2 errors, 4 skipped in 12.34s =====";
+        for outcome in [
+            Outcome::Passed,
+            Outcome::Failed,
+            Outcome::NoTests,
+            Outcome::Unknown,
+        ] {
+            for basis in [
+                Basis::Summary,
+                Basis::ExitCode,
+                Basis::HiddenExitCode,
+                Basis::Background,
+                Basis::NoResult,
+            ] {
+                for summary in [None, Some(long.to_string())] {
+                    let t = TestRun {
+                        runner: "pytest".into(),
+                        exit_code_hidden: false,
+                        outcome,
+                        basis,
+                        summary,
+                    };
+                    assert_ste(&last_test_run(&t));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_piped_run_never_says_that_the_last_test_run_passed() {
+        let piped = |outcome, basis, summary: Option<&str>| {
+            last_test_run(&TestRun {
+                runner: "jest".into(),
+                exit_code_hidden: true,
+                outcome,
+                basis,
+                summary: summary.map(Into::into),
+            })
+        };
+        let unknown = piped(Outcome::Unknown, Basis::HiddenExitCode, None);
+        assert!(!unknown.contains("passed"), "{unknown}");
+        let pass = piped(
+            Outcome::Passed,
+            Basis::Summary,
+            Some("Tests: 5 passed, 5 total"),
+        );
+        assert!(
+            pass.starts_with("The summary of the last test run shows a pass"),
+            "{pass}"
+        );
+        let fail = piped(
+            Outcome::Failed,
+            Basis::Summary,
+            Some("Tests: 2 failed, 2 total"),
+        );
+        assert!(fail.contains("shows a failure"), "{fail}");
+    }
+
+    #[test]
+    fn a_subagent_location_is_named() {
+        let mut f = Finding::new(Rule::TestsFailedAtEnd, Severity::High);
+        f.in_subagent = true;
+        assert_eq!(location_text(&f).as_deref(), Some("in a subagent"));
+        f.transcript_line = Some(4);
+        assert_eq!(
+            location_text(&f).as_deref(),
+            Some("transcript line 4, in a subagent")
+        );
     }
 
     fn sample<'a>(

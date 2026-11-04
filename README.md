@@ -4,7 +4,13 @@ Your agent says "done." Agentproof shows the proof.
 
 Agentproof is a plugin for Claude Code. It examines the work of an AI coding agent after each turn. It compares the session transcript with the changes in the repository.
 
-**Status: milestone 4 of 4.** Agentproof runs ten rule checks and an optional AI check, gives a verdict and writes a full HTML report.
+**Status: early development.** Milestones 1 to 4 are built. Agentproof runs ten rule checks and an optional AI check, gives a verdict and writes a full HTML report. It is not ready for production use. Read [the known limits](docs/about.md#known-limits-today) and [the roadmap](docs/roadmap.md).
+
+## Documentation
+
+- [About Agentproof](docs/about.md): what Agentproof is, how it works, what it checks and its known limits.
+- [Roadmap](docs/roadmap.md): what is done and what comes next.
+- [All documents](docs/README.md): the product analysis, the audit and the first design document.
 
 ## What Agentproof does now
 
@@ -14,6 +20,7 @@ Agentproof is a plugin for Claude Code. It examines the work of an AI coding age
 - Agentproof shows a short message in Claude Code. The message shows only new findings.
 - Agentproof writes a full HTML report and a JSON file. The report has no external requests, so you can attach it to a pull request.
 - Agentproof runs ten rule checks. Examples: tests that failed although the agent said that they pass, skipped tests, dangerous commands, new dependencies and changes to sensitive files.
+- Agentproof reads the summary line of each test run, for example `Tests: 2 failed`. Thus a pipe such as `| tail` cannot hide a failure that the output shows. It also reads the test runs of subagents.
 - Agentproof gives a verdict: "do not trust this work", "examine N items" or "no red flags found". It never says "safe" without the AI check.
 - If nothing changed since the last check, Agentproof shows nothing.
 - Agentproof does not change the repository. It keeps its own files in `~/.agentproof`.
@@ -137,6 +144,7 @@ The container cannot build the macOS version yet.
 | `scripts/` | Build scripts. |
 | `tests/e2e/` | End-to-end tests of the plugin. |
 | `.devcontainer/` | The development container. |
+| `docs/` | The documentation: the product, the roadmap and the analysis. |
 
 ## Text rules
 

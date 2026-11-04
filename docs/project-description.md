@@ -2,6 +2,8 @@
 
 Nov 3, 2026 · @Farhod
 
+> **Note (4 November 2026):** This file is the first design document and the build log of milestones 1 to 4. Some parts are old. For the current product description, read [about.md](about.md). For the current plan, read [roadmap.md](roadmap.md).
+
 Name: Agentproof (chosen Nov 3, 2026; free on crates.io). Domains, plugin marketplaces and trademarks are not checked yet.
 
 Status: milestone 4 is done (Nov 3, 2026), except a test with a real API key. The macOS build from milestone 1 is not done.
@@ -230,6 +232,8 @@ Limit: the plugin itself is not tested in the container. The Claude desktop app 
 All contributors use the same container, so all contributors get the same results.
 
 ## Roadmap
+
+> **Note:** [roadmap.md](roadmap.md) replaces this draft roadmap (4 November 2026).
 
 Draft, assuming one developer with Claude Code, starting the week of Nov 9, 2026.
 

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::changes::FileDiff;
 use crate::config::{AiConfig, Provider};
 use crate::redact;
+use crate::testruns::{Basis, Outcome, TestRun};
 use crate::transcript::Session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +98,29 @@ pub struct Request {
     pub shortened: bool,
 }
 
+/// The result of a test command for the AI check. A pipe can hide the exit
+/// code, so the text says where the result comes from.
+fn test_result(t: &TestRun) -> String {
+    let what = match (t.outcome, t.basis) {
+        (Outcome::Passed, Basis::Summary) => "test run passed, from the test summary",
+        (Outcome::Passed, _) => "test run passed, from the exit code",
+        (Outcome::Failed, Basis::Summary) => "test run FAILED, from the test summary",
+        (Outcome::Failed, _) => "test run FAILED, from the exit code",
+        (Outcome::NoTests, _) => "test run found no tests",
+        (Outcome::Unknown, Basis::HiddenExitCode) => {
+            "test result not known: the shell hid the exit code, and the output has no test summary"
+        }
+        (Outcome::Unknown, Basis::Background) => {
+            "test result not known: the command ran in the background"
+        }
+        (Outcome::Unknown, _) => "test result not known: the transcript has no result",
+    };
+    match &t.summary {
+        Some(s) => format!("{what} ({s})"),
+        None => what.to_string(),
+    }
+}
+
 pub fn build(session: &Session, diffs: &[FileDiff]) -> Request {
     let mut t = String::new();
     let shortened = std::cell::Cell::new(false);
@@ -134,15 +158,21 @@ pub fn build(session: &Session, diffs: &[FileDiff]) -> Request {
         shortened.set(true);
     }
     for c in session.commands.iter().skip(skip) {
-        let result = match (c.failed, c.exit_code) {
-            (Some(true), Some(code)) => format!("failed, exit code {code}"),
-            (Some(true), None) => "failed".into(),
-            (Some(false), _) => "passed".into(),
-            (None, _) => "no result".into(),
+        let result = match (&c.test, c.failed, c.exit_code) {
+            (Some(test), _, _) => test_result(test),
+            (None, Some(true), Some(code)) => format!("failed, exit code {code}"),
+            (None, Some(true), None) => "failed".into(),
+            (None, Some(false), _) => "passed".into(),
+            (None, None, _) => "no result".into(),
+        };
+        let place = if c.from_subagent {
+            ", in a subagent"
+        } else {
+            ""
         };
         let _ = writeln!(
             t,
-            "[transcript line {}] $ {} -> {result}",
+            "[transcript line {}{place}] $ {} -> {result}",
             c.line,
             cut(&c.command, 500)
         );
@@ -365,7 +395,7 @@ mod tests {
                 failed: Some(true),
                 exit_code: Some(101),
                 error: Some("test login ... FAILED".into()),
-                from_subagent: false,
+                ..CommandRun::default()
             }],
             final_message: Some("Fixed login. All tests pass.".into()),
             final_message_line: Some(9),

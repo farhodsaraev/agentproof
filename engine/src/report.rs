@@ -256,8 +256,14 @@ fn file_context(f: &Finding, diffs: &[FileDiff]) -> Option<String> {
 
 /// The command and its error for a transcript finding, as escaped HTML.
 fn command_context(f: &Finding, s: Option<&Session>) -> Option<String> {
-    let line = f.transcript_line?;
-    let c = s?.commands.iter().find(|c| c.line == line)?;
+    let s = s?;
+    let c = match f.command {
+        Some(i) => s.commands.get(i)?,
+        None => {
+            let line = f.transcript_line?;
+            s.commands.iter().find(|c| c.line == line)?
+        }
+    };
     let mut out = format!("$ {}", clean(&short(&c.command, 600)));
     if let Some(e) = &c.error {
         let _ = write!(
@@ -265,6 +271,9 @@ fn command_context(f: &Finding, s: Option<&Session>) -> Option<String> {
             "\n<span class=\"del\">{}</span>",
             clean(&short(e, 400))
         );
+    }
+    if let Some(summary) = c.test.as_ref().and_then(|t| t.summary.as_deref()) {
+        let _ = write!(out, "\n{}", clean(&short(summary, 400)));
     }
     Some(out)
 }
@@ -287,20 +296,21 @@ fn claims(h: &mut String, r: &CheckResult) {
         let runs: Vec<_> = s
             .commands
             .iter()
-            .filter(|c| checks::test_tool(&c.command).is_some())
+            .filter_map(|c| Some((c, c.test.as_ref()?)))
             .collect();
         match runs.last() {
             None => facts.push("The agent did not run the tests.".to_string()),
-            Some(last) => {
+            Some((_, last)) => {
                 facts.push(format!(
                     "The agent ran the tests {}.",
                     count(runs.len(), "time", "times")
                 ));
-                facts.push(match last.failed {
-                    Some(true) => "The last test run failed.".into(),
-                    Some(false) => "The last test run passed.".into(),
-                    None => "The result of the last test run is not in the transcript.".into(),
-                });
+                match runs.iter().filter(|(c, _)| c.from_subagent).count() {
+                    0 => {}
+                    1 => facts.push("1 of these runs was in a subagent.".into()),
+                    n => facts.push(format!("{n} of these runs were in subagents.")),
+                }
+                facts.push(messages::last_test_run(last));
             }
         }
         if let Some(phrase) = s.final_message.as_deref().and_then(checks::pass_claim) {
@@ -621,17 +631,14 @@ mod no_secrets {
     #[test]
     fn secret_files_show_no_content() {
         let f = Finding {
-            rule: crate::checks::Rule::SensitiveFile {
-                area: crate::checks::Area::Secrets,
-            },
-            severity: Severity::Medium,
             file: Some(".env".into()),
             line: Some(1),
-            transcript_line: None,
-            evidence: String::new(),
-            text: String::new(),
-            other_origin: false,
-            named_in_request: false,
+            ..Finding::new(
+                crate::checks::Rule::SensitiveFile {
+                    area: crate::checks::Area::Secrets,
+                },
+                Severity::Medium,
+            )
         };
         let d = [FileDiff {
             path: ".env".into(),

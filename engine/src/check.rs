@@ -211,15 +211,9 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
             };
             ai_confirms = false;
             findings.push(Finding {
-                rule,
-                severity,
-                file: None,
-                line: None,
                 transcript_line: s.final_message_line,
                 evidence: c.evidence.clone(),
-                text: String::new(),
-                other_origin: false,
-                named_in_request: false,
+                ..Finding::new(rule, severity)
             });
         }
         findings.sort_by_key(|f| f.severity);

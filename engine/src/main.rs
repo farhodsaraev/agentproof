@@ -10,6 +10,7 @@ mod messages;
 mod redact;
 mod report;
 mod store;
+mod testruns;
 mod time;
 mod transcript;
 
