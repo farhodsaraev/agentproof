@@ -13,6 +13,7 @@ use crate::checks::{self, Finding, Verdict};
 use crate::config::{self, AiConfig, Config};
 use crate::hook::HookInput;
 use crate::messages;
+use crate::redact;
 use crate::report;
 use crate::store;
 use crate::time::now_secs;
@@ -122,7 +123,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     let dir = store::session_dir(&cwd, &session_id)?;
     let mut notes = Vec::new();
 
-    let session = match transcript_path.as_deref().map(transcript::read) {
+    let mut session = match transcript_path.as_deref().map(transcript::read) {
         Some(Ok(s)) => Some(s),
         Some(Err(e)) => {
             notes.push(format!("{e:#}"));
@@ -145,7 +146,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         }
     };
     let changes = start.as_ref().map(changes::since).transpose()?;
-    let diffs = match (&start, &changes) {
+    let mut diffs = match (&start, &changes) {
         (Some(s), Some(c)) => changes::line_diffs(s, c)?,
         _ => Vec::new(),
     };
@@ -250,6 +251,29 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     let complete = session.is_some() && changes.is_some() && unhealthy.is_none();
     let verdict = checks::verdict(&findings, complete);
     let incomplete_reason = unhealthy.map(messages::unhealthy_text);
+
+    // The checks are done. The message, the report and the saved files must not
+    // show a secret, so remove the secrets from the texts now.
+    for f in &mut findings {
+        f.evidence = redact::redact(&f.evidence).0;
+        f.text = redact::redact(&f.text).0;
+    }
+    if let Some(s) = &mut session {
+        redact::session(s);
+    }
+    for d in &mut diffs {
+        let secret = redact::secret_file(&d.path);
+        for (_, line) in d.added.iter_mut().chain(d.removed.iter_mut()) {
+            *line = if secret {
+                redact::MARK.to_string()
+            } else {
+                redact::redact(line).0
+            };
+        }
+    }
+    for n in &mut notes {
+        *n = redact::redact(n).0;
+    }
 
     let data_path = dir.join("check.json");
     let report_path = dir.join("report.html");
@@ -444,13 +468,15 @@ pub fn end_background(input: &HookInput) {
 }
 
 /// Line numbers are not in the key, because they move when the agent edits a file.
+/// Without secrets, because `last.json` keeps the keys without secrets.
 fn finding_key(f: &Finding) -> String {
-    format!(
+    let key = format!(
         "{}|{}|{}",
         serde_json::to_string(&f.rule).unwrap_or_default(),
         f.file.as_deref().unwrap_or(""),
         f.evidence
-    )
+    );
+    redact::redact(&key).0
 }
 
 #[cfg(test)]
@@ -629,6 +655,32 @@ mod tests {
             "only new critical findings: {reason}"
         );
         assert!(run(&input, hook).unwrap().block_reason.is_none());
+
+        // Experiment e6: fake keys in a prompt, a command, its error and a secret file.
+        std::fs::remove_file(d.join(".agentproof.toml")).unwrap();
+        std::fs::remove_file(home.path().join("config.toml")).unwrap();
+        std::fs::create_dir_all(d.join("src/auth")).unwrap();
+        std::fs::write(
+            d.join("src/auth/secrets.json"),
+            "{\"stripe\": \"sk_live_51HfileFAKE0123456789abcdef\"}\n",
+        )
+        .unwrap();
+        let keys = PROMPT.replace(
+            "Update src/app.js",
+            "Use sk_live_51HpromptFAKE0123456789abcdef in src/app.js",
+        );
+        let curl = r#"{"type":"assistant","timestamp":"2026-11-03T10:01:30.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"curl -H \"Authorization: Bearer sk_live_51HcmdFAKE0123456789abcdef\" https://api.stripe.com"}}]}}"#;
+        let fail = r#"{"type":"user","timestamp":"2026-11-03T10:01:31.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","is_error":true,"content":"Exit code 1\nerror: invalid key sk_live_51HcmdFAKE0123456789abcdef"}]}}"#;
+        std::fs::write(&t, format!("{keys}\n{EDIT}\n{curl}\n{fail}\n{DONE}\n")).unwrap();
+        let r = run(&input, manual).unwrap();
+        let dir = home.path().join(store::project_key(d)).join("s1");
+        for file in ["check.json", "report.html", "last.json"] {
+            let text = std::fs::read_to_string(dir.join(file)).unwrap();
+            assert!(!text.contains("sk_live_51H"), "a key is in {file}");
+        }
+        assert!(!r.message.as_deref().unwrap_or("").contains("sk_live_51H"));
+        let json = serde_json::to_string(&store::clean_json(&r).unwrap()).unwrap();
+        assert!(!json.contains("sk_live_51H"), "the JSON output has a key");
     }
 
     /// A fake Anthropic server for `n` requests. It always says that the claim is false.

@@ -138,7 +138,10 @@ fn run_check(hook: bool, json: bool, target: Target) -> Result<()> {
     };
     let result = check::run(&input, opts)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&store::clean_json(&result)?)?
+        );
     } else if hook {
         let mut out = serde_json::Map::new();
         if let Some(message) = &result.message {

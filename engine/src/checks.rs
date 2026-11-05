@@ -1191,6 +1191,8 @@ pub fn sensitive_area(path: &str) -> Option<Area> {
         || name.ends_with(".pem")
         || name.ends_with(".key")
         || name.starts_with("id_rsa")
+        // A secret file in a folder of another area, for example `src/auth/secrets.json`.
+        || crate::redact::secret_file(path)
     {
         return Some(Area::Secrets);
     }

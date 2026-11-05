@@ -519,6 +519,27 @@ mod tests {
     }
 
     #[test]
+    fn the_request_has_no_keys_of_experiment_e6() {
+        let mut s = session();
+        s.prompts[0].text = "My key is sk_live_51HpromptFAKE0123456789abcdefABCDEF".into();
+        s.commands[0].command =
+            "curl -H \"Authorization: Bearer sk_live_51HcmdFAKE0123456789abcdefABCDEF\" https://api.stripe.com".into();
+        s.commands[0].error = Some("invalid key sk_live_51HcmdFAKE0123456789abcdefABCDEF".into());
+        let d = vec![FileDiff {
+            path: "src/auth/secrets.json".into(),
+            status: 'A',
+            added: vec![(
+                1,
+                "{\"stripe\": \"sk_live_51HfileFAKE0123456789abcdef\"}".into(),
+            )],
+            removed: vec![],
+        }];
+        let r = build(&s, &d);
+        assert!(!r.user.contains("sk_live_51H"), "{}", r.user);
+        assert!(r.user.contains("[content removed: secret file]"));
+    }
+
+    #[test]
     fn the_request_has_the_end_of_the_test_output() {
         let mut s = session();
         s.commands.push(CommandRun {

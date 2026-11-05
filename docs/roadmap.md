@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 5 November 2026. Status of Phase A: In progress. A1, A2 and A3 are done, and A4 is next.
+Last update: 5 November 2026. Status of Phase A: In progress. A1 to A4 are done, and A5 is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -96,7 +96,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A1 | **Read test output** (n01 core, weeks 1 and 2). Keep the first 2 KB and the last 8 KB of the output of each test command, also in subagents. Mark piped runs "exit code hidden". Parse the summaries of pytest, jest, vitest, cargo and go. Add the test-command forms that the engine does not know: `npm run test:*`, `bun run test`, `python manage.py test`, `nx test` and others. Treat zero-test runs as "not run". Do not trust exit code 0 from a background command until its summary appears | 1, 8 | L | Experiments e1 and e7 give "do not trust this work". A "tests pass" claim after `npm run test:unit` gives no finding. No report says "the last test run passed" for a piped run. The hook check takes less than 2 s on the largest real session | Done, 4 November 2026, commit `f95d880` |
 | A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Done, 4 November 2026, commit `3dd5c19` |
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026, commit `947d40e` |
-| A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Not started |
+| A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026. Not committed yet |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Not started |
 | A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Not started |
 | A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
@@ -218,6 +218,32 @@ A3 is done. The change is in commit `947d40e`.
 - The engine checks that the evidence exists, but not that the evidence shows the claim.
 - A3 does not show the last change and the test result for each changed file. Section 5 of the analysis names this step, but section 7 does not put it in Phase A.
 
+### A4 result (5 November 2026)
+
+A4 is done. It is not committed yet.
+
+**What changed:**
+
+- Each text of each saved file goes through secret removal: `check.json`, `last.json`, `ai.json` and `start.json`. The JSON output, the message and the report also go through it.
+- The engine finds more key formats: Stripe keys and webhook secrets, npm tokens, GitLab tokens, Slack `xoxe-` tokens and the token after `Bearer`.
+- The secret-file check no longer depends on the order of the areas. A file such as `src/auth/secrets.json` is now a secret file, not an authentication file. Thus its content does not go into the report or the AI request.
+- For a secret file, the saved changes have only the path.
+
+**What the tests show:**
+
+- All 124 unit and scenario tests pass, and 5 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 27 of 27.
+- Experiment e6: no fake key is in the JSON output, `check.json`, `last.json` or `report.html`. With the engine before A1, all four had the keys. A unit test shows that the AI request has no keys.
+- The other experiments give the same results as after A3.
+- A replay of the 26 local sessions with the A3 build and the A4 build gave the same verdicts and findings for each session.
+- The largest session (130 MB) took 1.5 s to 2.0 s with both builds. The machine was busy, so the times change from run to run. A4 is not measurably slower.
+
+**Limits that stay:**
+
+- The engine finds only known key formats and values after known names. It does not find unknown key formats.
+- The AI check through the agent hook removes no secrets. The checker reads the files and the transcript itself.
+- The transcript file of Claude Code keeps all secrets.
+- A faster secret check (one pre-check for all patterns) is not in A4. Windows Smart App Control blocked the build with this change, so nobody tested it on Windows.
+
 ### How to do A1 and A2
 
 These details come from [section 5, item 1](product-analysis.md#the-top-10) of the analysis (the idea "Test forensics", n01).
@@ -251,7 +277,7 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 | A1 | Done. See "A1 result" above |
 | A2 | Done. See "A2 result" above |
 | A3 | Done. See "A3 result" above |
-| A4 | The JSON file keeps the prompts, the commands, the errors and the final message with no secret removal. `redact.rs` has no pattern for Stripe-style keys. `secret_file()` depends on the order of the areas in `sensitive_area()` |
+| A4 | Done. See "A4 result" above |
 | A5 | `changed_by_agent()` in `checks.rs` counts only edits by file tools, paths or file names in commands, and a list of broad command words. Edits through MCP tools do not count |
 | A6 | `paths_at_start()` in `changes.rs` reads only the start commit and the changed files. Thus the cleanup exception can cover an ignored folder that existed at the start. The start hook has a timeout of 15 s |
 | A7 | `engine/tests/data/` has 3 sample transcripts. The end-to-end scripts run only on Windows. The experiment files are not in the repository. Make them again from appendix section B |
@@ -467,7 +493,7 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 | 2 | P0 | A narrower run that passes clears an earlier full failure | A2 (done), A7 |
 | 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3 (done), then L1 |
 | 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 |
-| 5 | P0 | The JSON file and the report keep secrets | A4, A7 |
+| 5 | P0 | The JSON file and the report keep secrets | A4 (done), A7 |
 | 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5, A7 |
 | 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6, A7 |
 | 8 | P0 | Test runs in subagents have no results | A1 (done), A7 |
@@ -602,3 +628,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A2 is in commit `3dd5c19`.
 - 5 November 2026: A3 is done. The section "A3 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A3 is in commit `947d40e`.
+- 5 November 2026: A4 is done. The section "A4 result" gives the changes, the test results and the limits that stay.

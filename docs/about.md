@@ -262,17 +262,19 @@ Data leaves your computer only when you turn on the AI check. The API key method
 
 **How long the files stay.** No code deletes old session folders, so they stay until you delete them. On 4 November 2026, the data folder of the maintainer had 9.8 MB in 13 session folders. Planned: a cleanup command and a default limit of 30 days. See [roadmap.md](roadmap.md).
 
-**Secret removal.** The engine replaces each secret that it finds with `[REMOVED BY AGENTPROOF]`. It finds private keys, the key formats of some providers such as Anthropic and GitHub, and passwords in addresses. It also finds values after names such as `password`, `token` or `secret`. For a secret file such as `.env` or `*.pem`, the AI request and the report do not show the content. The engine removes secrets from the AI request, from the report text and from the evidence of each finding.
+**Secret removal.** The engine replaces each secret that it finds with `[REMOVED BY AGENTPROOF]`. It finds private keys and the key formats of some providers, for example Anthropic, OpenAI, GitHub, AWS, Slack, Google, Stripe, npm and GitLab. It also finds the token after `Bearer`, passwords in addresses, and values after names such as `password`, `token` or `secret`. The engine removes secrets from the AI request, the message, the report and the JSON output. It also removes them from each text of each saved file: `check.json`, `last.json`, `ai.json` and `start.json`.
+
+A secret file has the content of secrets only. Examples are `.env`, `*.pem`, `*.key`, `*.p12` and `.npmrc`. A file with "secret" or "credentials" in its name is also a secret file. The AI request, the report and the saved files do not show the content of a secret file. A file with the end `.example`, `.sample` or `.template` is not a secret file.
 
 These are the known problems of secret removal:
 
-- `check.json` keeps the prompts, the commands, the errors and the final message with no secret removal. A finding on a secret file can also keep one line of that file as evidence.
-- There are no patterns for many key formats, for example Stripe keys (`sk_live_`) and GitLab tokens.
+- The engine finds only the key formats that it knows, and the values after known names. It does not measure how random a text is, so it does not find unknown key formats.
 - The engine makes long text shorter before it removes secrets, so a part of a key can stay.
-- A file such as `src/auth/secrets.json` counts as an authentication file, not as a secret file. Thus its content goes into the report and the AI request.
-- In audit experiment e6, a test session had fake keys in a prompt, a command error and a file. Then `check.json`, `report.html` and `last.json` had these keys.
+- The transcript file of Claude Code keeps all secrets. Agentproof does not change it.
+- The AI check through the agent hook removes no secrets. The checker reads the files and the transcript itself.
+- In audit experiment e6, a test session had fake keys in a prompt, a command error and a file. Before 5 November 2026, `check.json`, `report.html` and `last.json` had these keys. Now none of these files has them.
 
-Warning: Examine the report and the JSON file before you share them. They can contain secrets and personal data. Planned: secret removal for each saved field, and more key patterns. See [roadmap.md](roadmap.md).
+Warning: Examine the report and the JSON file before you share them. They can contain secrets in unknown formats and personal data.
 
 ## Platforms and install today
 
@@ -325,7 +327,7 @@ The data goes through the files in this sequence. `main.rs` and `hook.rs` get th
 
 If the AI check is on, `ai.rs` makes the AI request, `redact.rs` removes secrets from it, and `ai.rs` reads the claims in the answer. `check.rs` makes the AI findings from these claims and gives them their severity. Last, `messages.rs` gives the text, and `report.rs` makes the HTML of the report. `check.rs` writes the JSON file through `store.rs`, and it writes the report.
 
-**Tests.** The engine has 119 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 27 assertions and a fake Anthropic server. On 4 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
+**Tests.** The engine has 124 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 27 assertions and a fake Anthropic server. On 4 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
 
 ## Principles
 
@@ -351,7 +353,7 @@ The product analysis of 4 November 2026 lists 16 problems that prevent productio
 | 2 | P0 | Fixed on 4 November 2026 (roadmap item A2). A failure now counts until a later run of the same tests or more tests passes. A pass of only one file or one test gives a High finding, or a Critical finding with a claim that all tests pass. | Done ([roadmap.md](roadmap.md)). |
 | 3 | P0 | Fixed on 5 November 2026 (roadmap item A3). The engine no longer gives "safe to merge". An AI opinion gives at best "no red flags found". | Done. Later, a proof run can give "safe to merge" ([roadmap.md](roadmap.md)). |
 | 4 | P0 | Fixed on 5 November 2026 (roadmap item A3). An empty transcript, or a transcript in an unknown format, gives "incomplete" with the reason. | Done ([roadmap.md](roadmap.md)). |
-| 5 | P0 | Secrets can appear in the JSON file and the report. The engine does not remove Stripe keys. | Planned: secret removal for each saved field, and more key patterns ([roadmap.md](roadmap.md)). |
+| 5 | P0 | Fixed on 5 November 2026 (roadmap item A4). The engine removes secrets from each text of each saved file, and it knows more key formats, for example Stripe keys. | Done ([roadmap.md](roadmap.md)). |
 | 6 | P0 | Edits through MCP tools, or commands on a folder, count as "other origin". Thus their findings become Low. | Planned: the engine will never lower Critical, High, CI or secret findings to Low ([roadmap.md](roadmap.md)). |
 | 7 | P0 | When the agent deletes old data that Git ignores, the engine treats this as cleanup and gives no finding. | Planned: the engine will record the ignored paths at the session start ([roadmap.md](roadmap.md)). |
 | 8 | P0 | Fixed on 4 November 2026 (roadmap item A1). The engine now keeps the results of subagent commands, and all rule checks for commands examine them. The transcripts of workflow subagents are not read yet (see the list below). | Done, except workflow subagents ([roadmap.md](roadmap.md)). |

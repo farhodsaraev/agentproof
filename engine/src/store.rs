@@ -48,12 +48,21 @@ pub fn session_dir(project: &Path, session: &str) -> Result<PathBuf> {
     Ok(data_dir()?.join(project_key(project)).join(session))
 }
 
+/// Save a value as JSON. A saved file never keeps a secret: the engine removes
+/// secrets from each text first.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(value)?)
+    std::fs::write(path, serde_json::to_vec_pretty(&clean_json(value)?)?)
         .with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// A value as JSON, with the secrets removed from each text.
+pub fn clean_json<T: Serialize>(value: &T) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(value)?;
+    crate::redact::json(&mut v);
+    Ok(v)
 }
 
 pub fn load<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
