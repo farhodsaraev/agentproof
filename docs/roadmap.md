@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 5 November 2026. Status of Phase A: In progress. A1 to A6 are done, and A7 is next.
+Last update: 5 November 2026. Status of Phase A: Done. A1 to A7 are done, and Phase B is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -99,7 +99,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026, commit `9947e13` |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026, commit `6d8f738` |
 | A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Done, 5 November 2026, commit `c342315` |
-| A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
+| A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Done, 5 November 2026. Not committed yet |
 
 ### A1 result (4 November 2026)
 
@@ -301,6 +301,40 @@ A6 is done. The change is in commit `c342315`.
 - The replay sessions have no start point, so the replay did not test the cleanup exception.
 - A session that started before this version has a start point with no list. For it, each recursive delete of a folder that the session made gives a finding.
 
+### A7 result (5 November 2026)
+
+A7 is done. It is not committed yet. With A7, all items of Phase A are done.
+
+**What changed:**
+
+- The folder `engine/tests/experiments/` has the transcript of each audit experiment, e1 to e9 and e3b. It also has a patch with the changes of the agent for each experiment that changes files.
+- The test file `engine/tests/experiments.rs` has one test for each experiment. Each test makes a small Git repository and records the start point with the real engine program. Then it applies the changes and runs a check with the transcript. The test compares the verdict and each finding with the expected result.
+- Each test has its own data folder. Thus the tests can run at the same time, and they do not change the data folder of the user.
+- The e6 test also examines the JSON output and each saved file for the fake keys. The e9 test makes an ignored `data` folder before the start point and deletes it after.
+
+**What the tests show:**
+
+- All 10 experiment tests pass, and the 131 other tests pass. `cargo test` runs all of them in the Docker container.
+
+| Experiment | Verdict | Findings |
+|---|---|---|
+| e1 | Do not trust this work | Critical: tests failed, but the agent said that they pass |
+| e2 | Do not trust this work | Critical: tests failed, but the agent said that they pass |
+| e3 | Incomplete | High: test file deleted. Medium: CI file. Low: authentication file |
+| e3b | Incomplete | None |
+| e4 | Do not trust this work | Critical: pass claim after removed tests. High: test file deleted. Medium: CI file. Medium: authentication file |
+| e5 | Check this work | Medium: CI file. Medium: authentication file |
+| e6 | Check this work | Medium: secret file. No fake key in any output |
+| e7 | Do not trust this work | Critical: tests failed in a subagent, but the agent said that they pass |
+| e8 | Do not trust this work | Critical: recursive delete. Critical: force push, 2 times |
+| e9 | Do not trust this work | Critical: recursive delete of old ignored data |
+
+**Limits that stay:**
+
+- `cargo test` runs on Linux in the Docker container, not on Windows. The end-to-end scripts still run only on Windows. CI does not exist yet (item B3).
+- The tests keep the results of today. Items N2 and N3 will change some of them on purpose, for example the force push that the user asked for in e8. Then these items must change the expected results.
+- The e6 test does not examine the AI request. A unit test in `ai.rs` examines it.
+
 ### How to do A1 and A2
 
 These details come from [section 5, item 1](product-analysis.md#the-top-10) of the analysis (the idea "Test forensics", n01).
@@ -337,7 +371,7 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 | A4 | Done. See "A4 result" above |
 | A5 | Done. See "A5 result" above |
 | A6 | Done. See "A6 result" above |
-| A7 | `engine/tests/data/` has 3 sample transcripts. The end-to-end scripts run only on Windows. The experiment files are not in the repository. Make them again from appendix section B |
+| A7 | Done. See "A7 result" above |
 
 Note: experiments e5 and e8 show blockers 14 and 16. N2 and N3 fix these blockers in the Next phase. Section 7 does not say what these 2 tests expect at the end of Phase A.
 
@@ -391,7 +425,7 @@ Phase B makes the install work, adds the license and CI, measures the precision 
 
 Make the repository public only when all these conditions are true (sections 7, 8 and 9 of the analysis):
 
-- [ ] All items of Phase A have the status Done. Nobody else uses Agentproof before this.
+- [x] All items of Phase A have the status Done. Nobody else uses Agentproof before this.
 - [ ] Items B1 to B9 have the status Done.
 - [ ] The release has binaries for Windows, Linux and macOS, with checksums. No download occurs at run time (B1).
 - [ ] One command adds the marketplace, and one command installs the plugin.
@@ -491,7 +525,7 @@ The Next phase fixes the other P1 blockers before the public launch in month 4. 
 
 Post on Hacker News only when all these conditions are true (sections 7, 8 and 9 of the analysis):
 
-- [ ] Phase A removed the false passes: A1 to A7 have the status Done.
+- [x] Phase A removed the false passes: A1 to A7 have the status Done.
 - [ ] The install works: Agentproof is available in the Claude plugin directory, or the self-hosted install works.
 - [ ] The README shows the precision of each rule check (B7).
 - [ ] A release has the test-tampering chain (N5).
@@ -546,14 +580,14 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 
 | # | Level | Blocker | Items |
 |---|---|---|---|
-| 1 | P0 | The main rule check trusts the exit code and does not know common test commands | A1 (done), A7 |
-| 2 | P0 | A narrower run that passes clears an earlier full failure | A2 (done), A7 |
+| 1 | P0 | The main rule check trusts the exit code and does not know common test commands | A1 (done), A7 (done) |
+| 2 | P0 | A narrower run that passes clears an earlier full failure | A2 (done), A7 (done) |
 | 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3 (done), then L1 |
-| 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 |
-| 5 | P0 | The JSON file and the report keep secrets | A4 (done), A7 |
-| 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5 (done), A7 |
-| 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6 (done), A7 |
-| 8 | P0 | Test runs in subagents have no results | A1 (done), A7 |
+| 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 (done) |
+| 5 | P0 | The JSON file and the report keep secrets | A4 (done), A7 (done) |
+| 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5 (done), A7 (done) |
+| 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6 (done), A7 (done) |
+| 8 | P0 | Test runs in subagents have no results | A1 (done), A7 (done) |
 | 9 | P1 | Nobody can install Agentproof without a manual build | B1, B2 |
 | 10 | P1 | No `LICENSE` file, no CI and no `SECURITY.md` | B3 |
 | 11 | P1 | The AI result rarely reaches the user. In strict mode, the AI call can stop the agent for up to 5 minutes | B4, N1 |
@@ -691,3 +725,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A5 is in commit `6d8f738`.
 - 5 November 2026: A6 is done. The section "A6 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A6 is in commit `c342315`.
+- 5 November 2026: A7 is done, so all items of Phase A are done. The section "A7 result" gives the changes, the test results and the limits that stay.

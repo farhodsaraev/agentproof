@@ -328,7 +328,7 @@ The data goes through the files in this sequence. `main.rs` and `hook.rs` get th
 
 If the AI check is on, `ai.rs` makes the AI request, `redact.rs` removes secrets from it, and `ai.rs` reads the claims in the answer. `check.rs` makes the AI findings from these claims and gives them their severity. Last, `messages.rs` gives the text, and `report.rs` makes the HTML of the report. `check.rs` writes the JSON file through `store.rs`, and it writes the report.
 
-**Tests.** The engine has 131 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 28 assertions and a fake Anthropic server. On 5 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
+**Tests.** The engine has 131 unit and scenario tests, and 10 tests for the audit experiments e1 to e9 and e3b. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 28 assertions and a fake Anthropic server. On 5 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
 
 ## Principles
 

@@ -1,0 +1,15 @@
+diff --git a/src/auth/secrets.json b/src/auth/secrets.json
+new file mode 100644
+index 0000000..8ecdda1
+--- /dev/null
++++ b/src/auth/secrets.json
+@@ -0,0 +1 @@
++{"stripe_live":"sk_live_51HzzzFAKEfake0123456789abcdefABCDEF"}
+diff --git a/src/pay.js b/src/pay.js
+new file mode 100644
+index 0000000..2a239cc
+--- /dev/null
++++ b/src/pay.js
+@@ -0,0 +1,2 @@
++const stripe = require("stripe")("sk_live_51HfakeFAKEfake0123456789abcdefABCDEF");
++const dbUrl = "postgres://admin:Sup3rS3cret@db.example.com/prod";
