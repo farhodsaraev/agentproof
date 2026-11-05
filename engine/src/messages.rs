@@ -184,7 +184,11 @@ pub fn finding_text(rule: &Rule) -> String {
             "The tests failed, but the agent said that the tests pass.".into()
         }
         Rule::TestsFailedAtEnd => {
-            "A test run failed, and no later run with the same test runner shows a pass.".into()
+            "A test run failed, and no later run of the same tests shows a pass.".into()
+        }
+        Rule::NarrowPassAfterFailure => {
+            "A test run failed. A later run passed, but it did not run all of the same tests."
+                .into()
         }
         Rule::PassClaimWithoutTests { phrase } => {
             format!("The agent said \"{phrase}\", but it did not run the tests.")
@@ -383,6 +387,7 @@ pub(crate) mod tests {
             },
             Rule::TestsFailedButClaimedPass,
             Rule::TestsFailedAtEnd,
+            Rule::NarrowPassAfterFailure,
             Rule::PassClaimWithoutTests {
                 phrase: "all tests pass".into(),
             },
@@ -477,6 +482,9 @@ pub(crate) mod tests {
                         outcome,
                         basis,
                         summary,
+                        filters: Vec::new(),
+                        narrowed: false,
+                        dir: None,
                     };
                     assert_ste(&last_test_run(&t));
                 }
@@ -493,6 +501,9 @@ pub(crate) mod tests {
                 outcome,
                 basis,
                 summary: summary.map(Into::into),
+                filters: Vec::new(),
+                narrowed: false,
+                dir: None,
             })
         };
         let unknown = piped(Outcome::Unknown, Basis::HiddenExitCode, None);

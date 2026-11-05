@@ -206,16 +206,11 @@ impl TestState {
 impl TestState {
     /// A test run that only its output shows, for example `bash run-tests.sh` or a
     /// container with tests as its command. Only a summary line with counts counts.
-    fn from_output(text: &str, exit: Exit) -> Option<Self> {
+    fn from_output(text: &str, exit: Exit, cmd: &CommandRun) -> Option<Self> {
         let summary = testruns::summarize(text)?;
-        let runner = summary.family?.to_string();
+        let runner = summary.family?;
         Some(TestState {
-            // The command does not show the runner, so the exit code proves nothing.
-            command: TestCommand {
-                runner,
-                pass_hidden: true,
-                fail_hidden: true,
-            },
+            command: testruns::output_command(runner, &cmd.command),
             exit,
             summary: Some(summary),
             output: text.to_string(),
@@ -252,18 +247,55 @@ fn is_viewer(command: &str) -> bool {
         "cut",
         "diff",
         "git",
+        // `gh run view --log` shows the output of a CI run, not a local test run.
+        "gh",
         "get-content",
         "gc",
         "select-string",
         "sls",
+        // PowerShell commands that only select, show or format text.
+        "select-object",
+        "foreach-object",
+        "where-object",
+        "%",
+        "?",
+        "out-string",
+        "out-host",
+        "format-table",
+        "format-list",
+        "ft",
+        "fl",
+        "measure-object",
+        "sort-object",
+        "get-item",
+        "get-childitem",
+        "gci",
+        "write-output",
+        "write-host",
     ];
     const NEUTRAL: &[&str] = &["cd", "pushd", "popd", "export", "set"];
+    // Quoted text, for example the pattern `'passed|failed'`, has no command separators.
+    let mut text = String::with_capacity(command.len());
+    let mut quote = None;
+    for c in command.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None => text.push(c),
+        }
+    }
     let mut viewer = false;
-    for part in command.split([';', '&', '|', '\n']) {
-        let Some(first) = part.split_whitespace().next() else {
+    for part in text.split([';', '&', '|', '\n']) {
+        // The program after the variables, for example `docker` in `CI=1 docker ...`.
+        let Some(first) = part
+            .split_whitespace()
+            .find(|w| !(w.contains('=') && !w.starts_with(['-', '$'])))
+        else {
             continue;
         };
         let name = first
+            .trim_start_matches('(')
             .rsplit(['/', '\\'])
             .next()
             .unwrap_or(first)
@@ -272,7 +304,8 @@ fn is_viewer(command: &str) -> bool {
         if VIEWERS.contains(&name.as_str()) {
             viewer = true;
         } else if !(NEUTRAL.contains(&name.as_str())
-            || first.contains('=')
+            // An assignment in PowerShell: `$x = ...`.
+            || first.starts_with('$')
             || first.chars().all(|c| c.is_ascii_digit()))
         {
             return false;
@@ -557,8 +590,9 @@ pub fn parse(raw: &str) -> Session {
                             match tests.entry(idx) {
                                 Entry::Occupied(mut e) => e.get_mut().add_output(part),
                                 Entry::Vacant(e) => {
-                                    let exit = Exit::Background(s.commands[idx].exit_code);
-                                    if let Some(state) = TestState::from_output(part, exit) {
+                                    let cmd = &s.commands[idx];
+                                    let exit = Exit::Background(cmd.exit_code);
+                                    if let Some(state) = TestState::from_output(part, exit, cmd) {
                                         e.insert(state);
                                     }
                                 }
@@ -618,7 +652,8 @@ pub fn parse(raw: &str) -> Session {
                         // A command whose output shows a test summary also ran tests, for
                         // example `bash run-tests.sh` or a container with tests as its command.
                         let text = text.unwrap_or_else(|| result_text(block));
-                        if let Some(state) = TestState::from_output(without_exit_line(&text), exit)
+                        if let Some(state) =
+                            TestState::from_output(without_exit_line(&text), exit, cmd)
                         {
                             tests.insert(idx, state);
                         }
@@ -821,6 +856,26 @@ mod tests {
     use crate::testruns::{Basis, Outcome};
 
     const SAMPLE: &str = include_str!("../tests/data/session.jsonl");
+
+    #[test]
+    fn finds_commands_that_only_show_files() {
+        for command in [
+            "cat old.log",
+            "cd x && grep passed log",
+            r#"$L = "C:\tmp\e2e.log"; Select-String -Path $L -Pattern 'passed|failed' | Select-Object -Last 5 | ForEach-Object { $_.Line }; "--- tail"; Get-Content $L -Tail 8"#,
+            "(Get-Item $L).LastWriteTime; Get-Content $L -Tail 8",
+            "gh run view 41666453946 --log-failed | grep -E 'passed|failed' | head -40",
+        ] {
+            assert!(is_viewer(command), "{command}");
+        }
+        for command in [
+            r#"MSYS_NO_PATHCONV=1 docker compose run --rm backend-test 2>&1 | grep -E "passed|failed" | tail -4"#,
+            "bash run-tests.sh | tail -5",
+            "CI=1 ./run.sh",
+        ] {
+            assert!(!is_viewer(command), "{command}");
+        }
+    }
 
     #[test]
     fn reads_prompts_and_ignores_generated_user_entries() {

@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 4 November 2026. Status of Phase A: In progress. A1 is done, and A2 is next.
+Last update: 4 November 2026. Status of Phase A: In progress. A1 and A2 are done, and A3 is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -94,7 +94,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | ID | Work | Blockers | Effort | Done when | Status |
 |---|---|---|---|---|---|
 | A1 | **Read test output** (n01 core, weeks 1 and 2). Keep the first 2 KB and the last 8 KB of the output of each test command, also in subagents. Mark piped runs "exit code hidden". Parse the summaries of pytest, jest, vitest, cargo and go. Add the test-command forms that the engine does not know: `npm run test:*`, `bun run test`, `python manage.py test`, `nx test` and others. Treat zero-test runs as "not run". Do not trust exit code 0 from a background command until its summary appears | 1, 8 | L | Experiments e1 and e7 give "do not trust this work". A "tests pass" claim after `npm run test:unit` gives no finding. No report says "the last test run passed" for a piped run. The hook check takes less than 2 s on the largest real session | Done, 4 November 2026, commit `f95d880` |
-| A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Not started |
+| A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Done, 4 November 2026. Not committed yet |
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Not started |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Not started |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Not started |
@@ -132,7 +132,7 @@ A1 is done. The change is in commit `f95d880`.
 
 - All 101 unit and scenario tests pass, and 25 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 27 of 27.
 - Experiments e1, e2 and e7 now give "do not trust this work". Experiment e4 also gets a High finding: the agent said "All tests pass", but the last run found no tests.
-- A replay of the 27 local sessions of the maintainer read 866 test runs. Of these runs, 506 passed, 235 failed, 13 found no tests, and 112 have no visible result. No verdict changed, and no new Critical finding came from test runs.
+- A replay of the 26 local sessions of the maintainer read 866 test runs. Of these runs, 506 passed, 235 failed, 13 found no tests, and 112 have no visible result. No verdict changed, and no new Critical finding came from test runs.
 - Two sessions got a true High finding for a failed test run at the end. For example, a Playwright class test shows "1 failed", and no later Playwright run passed. Two sessions got Low findings for repeated errors in subagents.
 - One session lost a High finding that was not correct. The agent ran the tests with a script, and the new engine reads the summary "334 passed" in the script output.
 - Earlier versions of the change gave false Critical findings in 2 sessions, because a script or a Docker service ran the tests. The rule for test runs that the command does not show fixed this.
@@ -140,12 +140,56 @@ A1 is done. The change is in commit `f95d880`.
 
 **Limits that stay:**
 
-- A later narrower run with the same test runner still clears a failure. A2 fixes this.
+- A later narrower run with the same test runner still clears a failure. A2 fixed this (see "A2 result").
 - A later pass clears a failure only when it has the same test runner. Thus `npx jest` and `npm test` are different runners, also when `npm test` starts jest.
 - A test run inside a script file counts only when its output shows a summary line with counts.
 - The engine does not read the transcripts of workflow subagents (`subagents/workflows`). One session has more than 600 MB of these files, so a check would take too long. See "Not scheduled".
 - When the shell hides the exit code and the output has no summary line or failure line, the result is "not known".
 - The other P0 blockers stay open. For example, experiments e3, e3b, e6 and e9 give the same results as before.
+
+### A2 result (4 November 2026)
+
+A2 is done. The change is not committed yet.
+
+**What changed:**
+
+- The engine reads the filters of each test command: paths, packages, targets, test names and options. Examples are `tests/test_a.py`, `-p engine`, `--lib`, `-k login` and `pnpm --filter web`. It knows the options of more than 30 runners. Examples are pytest, unittest, Django, jest, vitest, Playwright, cargo, nextest, go, make, Maven, Gradle, rspec and bazel.
+- A later run clears a failure only when it ran the same tests or more tests. Its paths, packages and names must hold the earlier tests. Each option of the later run that leaves out tests, for example `-k` or `--skip`, must also be in the earlier run. The settings and the mode must be the same, for example `--config` or `cargo test -- --ignored`.
+- A module holds the modules in it, for example `blog` holds `blog.tests`. A file holds its tests and its lines, for example `a.py::test_x` and `a_spec.rb:10`. A shell pattern holds the files that it matches, for example `tests/test_game*.py`. A cargo name holds longer names, for example `parse` holds `parse_empty_input`. A plain name pattern holds a longer pattern, for example `-k login` holds `-k test_login_ok`.
+- The engine reads the folder of a run from `cd` and from options such as `npm --prefix` or `make -C`. It compares the folders of two runs only when both commands show them.
+- When the output shows left-out tests, for example "2 deselected", but the command shows no filter, the earlier output must show the same. A project setting such as `-m "not slow"` in `pytest.ini` gives this result.
+- A run that only its output shows gets the test paths that a script gets, for example `tests/test_a.py` in `./scripts/test.sh tests/test_a.py`.
+- A new finding, `narrow_pass_after_failure` (High): a test run failed, and later only a run of a part of the same tests passed. When the final message says that all tests pass, the finding is `tests_failed_but_claimed_pass` (Critical).
+- A claim is about all tests only in two cases. The part of the sentence with the claim has the word "suite". Or a word such as "all" comes in the 4 words before the word for tests.
+- More commands only show text, so they are not test runs: PowerShell commands such as `Select-Object` and `ForEach-Object`, and `gh run view`. The replay found these A1 problems.
+
+**Code review:** a review with 10 agents examined the first version of A2. They found 8 problems, and they could show each problem with the engine. All 8 problems are fixed, each with a test. Examples:
+
+- A later run that added `-k`, `-t`, `-run` or a cargo test name to the same path cleared the failure of the whole path.
+- A later run without the name filter did not clear the failure of the run with the filter.
+- `pytest -v tests/test_a.py` counted as a run of all tests, because `-v` counted as an option with a value.
+- The `)` of `sh -c "..."`, the file after `&>`, the word `discover` and values such as `--trace on` counted as filters.
+- `npm test src/a.test.js` counted as a run of all tests.
+- With a project setting that leaves out tests, an equal later run never cleared a failure.
+- A pass of other tests changed a false claim from Critical to High.
+- The check for a claim about all tests read words outside the claim.
+
+**What the tests show:**
+
+- All 115 unit and scenario tests pass, and 14 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 27 of 27.
+- Experiment e2 now gives "do not trust this work". The results of the other experiments are the same as after A1.
+- A replay of the 26 local sessions of the maintainer read 873 test runs. Of these runs, 512 passed, 230 failed, 13 found no tests, and 118 have no visible result. No verdict changed, and no new Critical finding came from test runs.
+- 4 sessions got the new High finding `narrow_pass_after_failure`. Each of these 4 findings is true: a full run failed, and after it only runs of a part of the tests passed. These 4 sessions had the verdict "do not trust this work" before, because of other findings.
+- The replay found 3 problems in earlier versions of A2, and they are fixed. First, the folder in the transcript can be older than the folder of the shell after `cd`. Thus the engine does not use the folder in the transcript. Second, the engine read a test file that `sed` changed as a filter of a script run. Third, PowerShell commands that read old logs counted as test runs.
+- Speed on the largest session (130 MB): the median of 11 runs is 2.49 s for A2 and 2.35 s for A1. The computer was slower than in the A1 measurement (1.3 s). Thus the 2-second target of A1 needs a new measurement on a quiet computer.
+
+**Limits that stay:**
+
+- A later pass clears a failure only when it has the same test runner. Thus `npx jest` and `npm test` are different runners, also when `npm test` starts jest.
+- An option that the engine does not know does not count as a filter. For pytest, a path filter must look like a path, so `pytest unit` counts as a run of all tests. A filter inside a script is not visible, for example in `package.json`.
+- The engine compares the folders of two runs only when both commands show them. A run in a folder that holds the folder of a failed run can clear the failure.
+- The engine compares name patterns with special characters, and expressions, as text.
+- The other P0 blockers stay open, for example in experiments e3, e3b, e6 and e9.
 
 ### How to do A1 and A2
 
@@ -177,8 +221,8 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 
 | ID | Code today |
 |---|---|
-| A1 | Done. See "A1 result" below |
-| A2 | `test_runs()` in `checks.rs` clears a failure when any later run with the same test runner passes, with any scope. The runner comes from `detect()` in `testruns.rs`, for example `jest` or `script test:unit` |
+| A1 | Done. See "A1 result" above |
+| A2 | Done. See "A2 result" above |
 | A3 | `check.rs` counts a check as complete when it can read the transcript file and the Git changes. Thus an empty transcript counts as complete. `ai.rs` sends "passed" with no output for exit code 0. No code compares the evidence of the AI opinions with the transcript or the diff |
 | A4 | The JSON file keeps the prompts, the commands, the errors and the final message with no secret removal. `redact.rs` has no pattern for Stripe-style keys. `secret_file()` depends on the order of the areas in `sensitive_area()` |
 | A5 | `changed_by_agent()` in `checks.rs` counts only edits by file tools, paths or file names in commands, and a list of broad command words. Edits through MCP tools do not count |
@@ -393,7 +437,7 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 | # | Level | Blocker | Items |
 |---|---|---|---|
 | 1 | P0 | The main rule check trusts the exit code and does not know common test commands | A1 (done), A7 |
-| 2 | P0 | A narrower run that passes clears an earlier full failure | A2, A7 |
+| 2 | P0 | A narrower run that passes clears an earlier full failure | A2 (done), A7 |
 | 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3, then L1 |
 | 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3, A7 |
 | 5 | P0 | The JSON file and the report keep secrets | A4, A7 |
@@ -527,3 +571,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 4 November 2026: second version, after 3 reviews (code accuracy, source fidelity and ASD-STE100). New gate condition: items B1 to B9 have the status Done before the soft launch.
 - 4 November 2026: Phase A started. A1 is done. The section "A1 result" gives the changes, the test results and the limits that stay.
 - 4 November 2026: the documents and A1 are in commit `f95d880`.
+- 4 November 2026: A2 is done. The section "A2 result" gives the changes, the test results and the limits that stay.
