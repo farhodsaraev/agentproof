@@ -394,11 +394,12 @@ Phase B makes the install work, adds the license and CI, measures the precision 
 
 ### More details for Phase B
 
-- **B1 progress (5 November 2026).** Not committed yet.
+- **B1 progress (5 November 2026).** In commits `724e946` and `85bb2cd`.
   - The maintainer chose these points. Users install from a branch `release` that has the engine files. GitHub Actions builds and tests on Windows, macOS and Linux. Signatures stay in N11.
   - The workflow `.github/workflows/release.yml` builds 5 targets: Windows x64 (MSVC), macOS x64 and ARM64, and Linux x64 and ARM64. It writes `SHA256SUMS`. Then the script `tests/release/smoke.sh` tests the plugin with experiment e1 on Windows, macOS ARM64, macOS x64 and Linux. Only a version tag publishes, and only after all tests pass.
   - The launcher uses the MSVC build on Windows, and the GNU build of the Docker container when the MSVC build is missing.
-  - The release test passed on Windows with a local build. The workflow did not run on GitHub yet.
+  - A manual run of the workflow on GitHub passed in 4.5 minutes (run 42080649169). All 5 builds passed. The release test passed 7 of 7 checks on Windows x64, macOS ARM64, macOS x64 and Linux x64. Each system gave "do not trust this work" for experiment e1. The first run failed, because the Linux ARM64 build needed the ARM64 C library.
+  - Not done: the workflow did not publish a release yet. Nobody tested the Linux ARM64 build on an ARM64 computer. Nobody installed the plugin from the branch `release` in Claude Code yet.
   - Change to the plan: the workflow does not use cargo-dist, and it makes no shell, PowerShell, Homebrew or MSI installer. The plugin needs only the engine files on the branch `release`. These installers are for use outside Claude Code. The maintainer decides if they stay in B1.
   - Files from a Git clone have no download mark. Thus macOS does not add the quarantine mark, and Windows SmartScreen does not show a warning. Windows Smart App Control still can block a file without a signature, with no way for the user to let it run. The README tells this.
 - **B3** (section 11). Keep sample transcripts from each Claude Code version. Run them in CI.
