@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,14 @@ pub struct StartPoint {
     pub head: Option<String>,
     /// Files that had changes before the session, with their content id.
     pub dirty: BTreeMap<String, Option<String>>,
+    /// Paths that git did not track at the start, ignored paths too. A folder
+    /// with no tracked file gives one line that ends with `/`, for example
+    /// `data/`. None in a record of an older version, or when the list was not made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untracked: Option<Vec<String>>,
+    /// The list stopped at the time limit or the count limit, so it can miss paths.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untracked_partial: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -172,17 +181,106 @@ fn dirty_paths(root: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The time limit and the count limit for the list of untracked paths at the start.
+const UNTRACKED_TIME: Duration = Duration::from_millis(300);
+const UNTRACKED_MAX: usize = 50_000;
+
+/// The start point of a session, with the list of untracked and ignored paths.
 pub fn record(dir: &Path, now: i64) -> Result<Option<StartPoint>> {
+    record_with(dir, now, true)
+}
+
+/// The start point without the list of untracked paths. A check with no recorded
+/// start point uses this: the paths that exist now do not show the start.
+pub fn record_base(dir: &Path, now: i64) -> Result<Option<StartPoint>> {
+    record_with(dir, now, false)
+}
+
+fn record_with(dir: &Path, now: i64, list: bool) -> Result<Option<StartPoint>> {
     let Some(root) = repo_root(dir) else {
         return Ok(None);
     };
     let dirty = content_ids(&root, &dirty_paths(&root)?)?;
+    let (untracked, untracked_partial) = if list {
+        let (paths, complete) = untracked_paths(&root, UNTRACKED_TIME, UNTRACKED_MAX);
+        (Some(paths), !complete)
+    } else {
+        (None, false)
+    };
     Ok(Some(StartPoint {
         recorded_at: now,
         head: head(&root),
         repo_root: root,
         dirty,
+        untracked,
+        untracked_partial,
     }))
+}
+
+/// The paths that git does not track, ignored paths too. `--directory` gives one
+/// line for a folder with no tracked file, so a large ignored folder such as
+/// `node_modules` costs one line. The list stops at `limit` or at `max` paths.
+/// The second value is false when the list stopped or git failed.
+fn untracked_paths(root: &Path, limit: Duration, max: usize) -> (Vec<String>, bool) {
+    use std::io::Read;
+    let deadline = Instant::now() + limit;
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--others", "--directory", "-z"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return (Vec::new(), false);
+    };
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return (Vec::new(), false);
+    };
+    // Read on a separate thread, so that the time limit works while git is slow.
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        let mut part = Vec::new();
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            for &b in &buf[..n] {
+                if b == 0 {
+                    let path = String::from_utf8_lossy(&part).into_owned();
+                    if tx.send(Some(path)).is_err() {
+                        return;
+                    }
+                    part.clear();
+                } else {
+                    part.push(b);
+                }
+            }
+        }
+        let _ = tx.send(None);
+    });
+    let mut paths = Vec::new();
+    let complete = loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Some(p)) => {
+                paths.push(p);
+                if paths.len() >= max {
+                    break false;
+                }
+            }
+            Ok(None) => break true,
+            Err(_) => break false,
+        }
+    };
+    if !complete {
+        let _ = child.kill();
+    }
+    let ok = child.wait().is_ok_and(|s| s.success());
+    (paths, complete && ok)
 }
 
 /// All changes from the start point to the current work tree, including commits.
@@ -416,10 +514,22 @@ impl Fnv {
     }
 }
 
-/// All paths that existed when the session started (lowercase): the files in the
-/// start commit and the files that had changes. None if git fails.
+/// All paths at the start (lowercase): tracked files, dirty files and untracked paths. A
+/// folder that git did not track is one path without the end `/`. None when the
+/// engine cannot know all paths: git failed, or the list of untracked paths is
+/// missing or partial.
 pub fn paths_at_start(start: &StartPoint) -> Option<Vec<String>> {
+    if start.untracked_partial {
+        return None;
+    }
     let mut paths: Vec<String> = start.dirty.keys().map(|p| p.to_lowercase()).collect();
+    paths.extend(
+        start
+            .untracked
+            .as_ref()?
+            .iter()
+            .map(|p| p.trim_end_matches('/').to_lowercase()),
+    );
     if let Some(head) = &start.head {
         let raw = git(
             &start.repo_root,
@@ -451,6 +561,26 @@ mod tests {
         run(d, &["config", "user.name", "Test"]);
         run(d, &["config", "core.autocrlf", "false"]);
         tmp
+    }
+
+    #[test]
+    fn lists_untracked_folders_as_one_line_and_stops_at_the_limits() {
+        let tmp = repo();
+        let d = tmp.path();
+        write(d, ".gitignore", "cache/\n");
+        std::fs::create_dir_all(d.join("cache/deep")).unwrap();
+        for i in 0..50 {
+            write(d, &format!("cache/deep/{i}.bin"), "x");
+        }
+        write(d, "notes.txt", "x");
+        let (mut paths, complete) = untracked_paths(d, Duration::from_secs(10), 100);
+        paths.sort();
+        assert!(complete);
+        assert_eq!(paths, [".gitignore", "cache/", "notes.txt"]);
+        let (paths, complete) = untracked_paths(d, Duration::from_secs(10), 2);
+        assert_eq!((paths.len(), complete), (2, false));
+        let (_, complete) = untracked_paths(d, Duration::ZERO, 100);
+        assert!(!complete, "no time left");
     }
 
     #[test]

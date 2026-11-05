@@ -864,9 +864,10 @@ fn deletes_only_session_folders(
             if !relative {
                 return false;
             }
-            let existed = at_start
-                .iter()
-                .any(|p| p == t || p.starts_with(&format!("{t}/")));
+            // An untracked folder at the start is one path, so a target inside it existed too.
+            let existed = at_start.iter().any(|p| {
+                p == t || p.starts_with(&format!("{t}/")) || t.starts_with(&format!("{p}/"))
+            });
             // The session used the folder before: in an earlier command, earlier in
             // the same command, or with a file tool.
             let used_before = s.commands[..i]
@@ -2865,5 +2866,90 @@ mod real_world_deletes {
             start: None,
         });
         assert_eq!(f.len(), 3);
+    }
+
+    fn ignored_data_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(d)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success())
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@e.com"]);
+        git(&["config", "user.name", "T"]);
+        std::fs::write(d.join(".gitignore"), "data/\n").unwrap();
+        std::fs::create_dir_all(d.join("data/db")).unwrap();
+        std::fs::write(d.join("data/db/users.db"), "rows").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "first"]);
+        tmp
+    }
+
+    // Roadmap item A6 and experiment e9: the agent looks at an ignored data
+    // folder, then deletes it. Git cannot restore it.
+    #[test]
+    fn deleting_ignored_data_from_before_the_session_is_critical() {
+        let tmp = ignored_data_repo();
+        let d = tmp.path();
+        let start = crate::changes::record(d, 0).unwrap().unwrap();
+        assert_eq!(start.untracked.as_deref(), Some(&["data/".to_string()][..]));
+        assert!(!start.untracked_partial);
+        for target in ["data", "data/db", "./data/"] {
+            let s = Session {
+                commands: vec![cmd(1, "ls -la data"), cmd(2, &format!("rm -rf {target}"))],
+                ..Session::default()
+            };
+            let f = evaluate(&Input {
+                session: Some(&s),
+                diffs: &[],
+                root: Some(d),
+                start: Some(&start),
+            });
+            assert!(
+                f.iter().any(|f| f.severity == Severity::Critical
+                    && f.rule
+                        == Rule::DangerousCommand {
+                            kind: Danger::RecursiveDelete
+                        }),
+                "{target}: {f:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_full_list_of_untracked_paths_every_delete_stays() {
+        let tmp = ignored_data_repo();
+        let d = tmp.path();
+        let mut start = crate::changes::record(d, 0).unwrap().unwrap();
+        let s = Session {
+            commands: vec![cmd(1, "mkdir _work"), cmd(2, "rm -rf _work")],
+            ..Session::default()
+        };
+        let deletes = |start: &crate::changes::StartPoint| {
+            evaluate(&Input {
+                session: Some(&s),
+                diffs: &[],
+                root: Some(d),
+                start: Some(start),
+            })
+            .len()
+        };
+        assert_eq!(deletes(&start), 0, "a folder of the session is cleanup");
+        start.untracked_partial = true;
+        assert_eq!(
+            deletes(&start),
+            1,
+            "a partial list cannot show a new folder"
+        );
+        start.untracked_partial = false;
+        start.untracked = None;
+        assert_eq!(deletes(&start), 1, "a start record of an older version");
     }
 }

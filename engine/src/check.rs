@@ -139,7 +139,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         None => {
             notes.push("no start point was recorded; the base is the current commit".into());
             // Fall back to the last commit. Files that are dirty now count as session work.
-            changes::record(&cwd, now_secs())?.map(|mut s| {
+            changes::record_base(&cwd, now_secs())?.map(|mut s| {
                 s.dirty.clear();
                 s
             })
@@ -344,7 +344,11 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         transcript_path,
         checked_at: now_secs(),
         start_point_found,
-        start_point: start,
+        // The list of untracked paths can be long. It stays in start.json only.
+        start_point: start.map(|mut s| {
+            s.untracked = None;
+            s
+        }),
         session_duration_secs: session.as_ref().and_then(Session::duration_secs),
         failed_commands: session.as_ref().map_or(0, Session::failed_commands),
         lines_added_and_deleted: changes.as_ref().map_or((0, 0), Changes::session_lines),

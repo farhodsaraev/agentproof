@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 5 November 2026. Status of Phase A: In progress. A1 to A5 are done, and A6 is next.
+Last update: 5 November 2026. Status of Phase A: In progress. A1 to A6 are done, and A7 is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -98,7 +98,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026, commit `947d40e` |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026, commit `9947e13` |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026, commit `6d8f738` |
-| A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Not started |
+| A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Done, 5 November 2026. Not committed yet |
 | A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
 
 ### A1 result (4 November 2026)
@@ -270,6 +270,37 @@ A5 is done. The change is in commit `6d8f738`.
 - A command with a broad word such as `install` still counts all files as changed.
 - The new Critical rule needs a pass claim with no passing run. An agent that deletes a failing test and then runs the other tests with a pass is not Critical. Then the deleted test file is High.
 
+### A6 result (5 November 2026)
+
+A6 is done. It is not committed yet.
+
+**What changed:**
+
+- At the session start, the engine runs `git ls-files --others --directory`. The start point keeps the list of paths that Git does not track, ignored paths too. A folder with no tracked file is one line, for example `data/` or `node_modules/`.
+- The list stops after 300 ms or 50,000 paths. Then the start point marks it "partial".
+- A recursive delete counts as cleanup only when the engine has the full list, and the folder was not in it. A folder inside an untracked folder of the start point also existed. A partial list, or a start point of an older version, gives no cleanup exception.
+- `check.json` does not keep the list. Only `start.json` keeps it.
+- A check with no recorded start point does not make the list, because it cannot show the start.
+
+**What the tests show:**
+
+- All 131 unit and scenario tests pass, and 3 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 28 of 28.
+- I made experiment e9 again with a new start point. The delete of the ignored `data` folder gives a Critical finding and "do not trust this work". The engine before A6 gave "no red flags found". The saved e9 start point of the older version also gives Critical now, because it has no list.
+- The other experiments give the same results as after A5.
+- A replay of the 26 local sessions with the A5 build and the A6 build gave the same verdicts and findings for each session.
+- The start hook ran 7 times on each project of the maintainer. A6 adds less than 300 ms on each project. These are the median times:
+  - 4,992 tracked files: 512 ms with A5, 678 ms with A6.
+  - 1,251 tracked files: 350 ms with A5, 428 ms with A6.
+  - 557 tracked files: 536 ms with A5, 783 ms with A6.
+  - 51 tracked files: 456 ms with A5, 516 ms with A6.
+
+**Limits that stay:**
+
+- On the largest project, each Git command takes 0.35 to 0.46 s on Windows. The list was partial in 1 of 7 runs. In an earlier run on a busy machine, it was partial in each run. Then no recursive delete counts as cleanup, so a delete of a session folder can give a false alarm.
+- A better version starts the list before the other start work, so that both run at the same time. Windows Smart App Control blocked that build, so A6 does not include it.
+- The replay sessions have no start point, so the replay did not test the cleanup exception.
+- A session that started before this version has a start point with no list. For it, each recursive delete of a folder that the session made gives a finding.
+
 ### How to do A1 and A2
 
 These details come from [section 5, item 1](product-analysis.md#the-top-10) of the analysis (the idea "Test forensics", n01).
@@ -305,7 +336,7 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 | A3 | Done. See "A3 result" above |
 | A4 | Done. See "A4 result" above |
 | A5 | Done. See "A5 result" above |
-| A6 | `paths_at_start()` in `changes.rs` reads only the start commit and the changed files. Thus the cleanup exception can cover an ignored folder that existed at the start. The start hook has a timeout of 15 s |
+| A6 | Done. See "A6 result" above |
 | A7 | `engine/tests/data/` has 3 sample transcripts. The end-to-end scripts run only on Windows. The experiment files are not in the repository. Make them again from appendix section B |
 
 Note: experiments e5 and e8 show blockers 14 and 16. N2 and N3 fix these blockers in the Next phase. Section 7 does not say what these 2 tests expect at the end of Phase A.
@@ -521,7 +552,7 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 | 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 |
 | 5 | P0 | The JSON file and the report keep secrets | A4 (done), A7 |
 | 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5 (done), A7 |
-| 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6, A7 |
+| 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6 (done), A7 |
 | 8 | P0 | Test runs in subagents have no results | A1 (done), A7 |
 | 9 | P1 | Nobody can install Agentproof without a manual build | B1, B2 |
 | 10 | P1 | No `LICENSE` file, no CI and no `SECURITY.md` | B3 |
@@ -658,3 +689,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A4 is in commit `9947e13`.
 - 5 November 2026: A5 is done. The section "A5 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A5 is in commit `6d8f738`.
+- 5 November 2026: A6 is done. The section "A6 result" gives the changes, the test results and the limits that stay.
