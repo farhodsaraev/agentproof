@@ -51,6 +51,12 @@ pub struct CheckResult {
     pub session: Option<Session>,
     pub changes: Option<Changes>,
     pub verdict: Verdict,
+    /// Why the engine cannot trust the transcript or the changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_reason: Option<&'static str>,
+    /// The AI check found evidence for each claim. It is an opinion, so the best
+    /// verdict stays "no red flags found".
+    pub ai_confirms: bool,
     pub findings: Vec<Finding>,
     pub ai: AiStatus,
     pub strict: bool,
@@ -162,7 +168,7 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     });
 
     // The AI check.
-    let ai_status = match (&cfg.ai, &session, &changes) {
+    let mut ai_status = match (&cfg.ai, &session, &changes) {
         (Some(ai_cfg), Some(s), Some(c)) => {
             if s.final_message.is_none() || (session_files == 0 && !opts.force) {
                 AiStatus::NotNeeded
@@ -186,20 +192,38 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         _ => AiStatus::Off,
     };
     let mut ai_confirms = false;
-    if let (AiStatus::Done(r), Some(s)) = (&ai_status, &session) {
+    if let (AiStatus::Done(r), Some(s)) = (&mut ai_status, &session) {
         if let Some(e) = &r.error {
             notes.push(format!("AI check: {e}"));
+        }
+        // An opinion counts only with evidence that the engine can find.
+        let root = start.as_ref().map(|s| s.repo_root.as_path());
+        for c in &mut r.claims {
+            c.evidence_found = ai::evidence_found(&c.evidence, s, &diffs, root);
         }
         ai_confirms = r.error.is_none() && !r.claims.is_empty();
         for c in &r.claims {
             let (rule, severity) = match c.verdict {
-                ClaimVerdict::Supported => continue,
+                ClaimVerdict::Supported if c.evidence_found => continue,
+                ClaimVerdict::Supported => {
+                    ai_confirms = false;
+                    continue;
+                }
+                // A contradiction with evidence that the engine cannot find is weaker.
                 ClaimVerdict::Contradicted => (
                     checks::Rule::AiContradicted {
                         claim: c.claim.clone(),
-                        reason: c.reason.clone(),
+                        reason: if c.evidence_found {
+                            c.reason.clone()
+                        } else {
+                            format!("{} {}", c.reason, messages::EVIDENCE_NOT_FOUND)
+                        },
                     },
-                    checks::Severity::High,
+                    if c.evidence_found {
+                        checks::Severity::High
+                    } else {
+                        checks::Severity::Medium
+                    },
                 ),
                 ClaimVerdict::Unsupported => (
                     checks::Rule::AiUnsupported {
@@ -222,8 +246,10 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     for f in &mut findings {
         f.text = messages::finding_text(&f.rule);
     }
-    let complete = session.is_some() && changes.is_some();
-    let verdict = checks::verdict_with_ai(&findings, complete, ai_confirms);
+    let unhealthy = session.as_ref().and_then(|s| health(s, session_files));
+    let complete = session.is_some() && changes.is_some() && unhealthy.is_none();
+    let verdict = checks::verdict(&findings, complete);
+    let incomplete_reason = unhealthy.map(messages::unhealthy_text);
 
     let data_path = dir.join("check.json");
     let report_path = dir.join("report.html");
@@ -264,7 +290,9 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
             no_start: !start_point_found && (opts.force || first),
             no_git: changes.is_none(),
             no_transcript: session.is_none(),
+            incomplete_reason,
             ai_running: matches!(ai_status, AiStatus::Running),
+            ai_confirms,
             report_path: &report_path.to_string_lossy().replace('\\', "/"),
         })
     });
@@ -299,6 +327,8 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
         session,
         changes,
         verdict,
+        incomplete_reason,
+        ai_confirms,
         findings,
         ai: ai_status,
         strict: cfg.strict,
@@ -310,6 +340,26 @@ pub fn run(input: &HookInput, opts: Options) -> Result<CheckResult> {
     store::save(&data_path, &result)?;
     std::fs::write(&report_path, report::render(&result, &diffs))?;
     Ok(result)
+}
+
+/// The health check: a reason not to trust the transcript, if any. An unknown
+/// format must not give "no red flags found". `session_files` is the number of
+/// files that changed in the session.
+fn health(s: &Session, session_files: usize) -> Option<messages::Unhealthy> {
+    use messages::Unhealthy;
+    let tool_calls: usize = s.tool_calls.values().sum();
+    let known = s.prompts.len() + s.assistant_messages + tool_calls;
+    if known == 0 && s.ignored_lines == 0 && s.bad_lines == 0 {
+        Some(Unhealthy::Empty)
+    } else if known == 0 {
+        Some(Unhealthy::UnknownFormat)
+    } else if s.bad_lines > known {
+        Some(Unhealthy::MostLinesBad)
+    } else if session_files > 0 && s.files_edited.is_empty() && s.commands.is_empty() {
+        Some(Unhealthy::NoAgentWork)
+    } else {
+        None
+    }
 }
 
 /// The input of the AI check. A new key means a new AI check.
@@ -422,6 +472,34 @@ mod tests {
     const PROMPT: &str = r#"{"type":"user","timestamp":"2026-11-03T10:00:00.000Z","message":{"role":"user","content":"Update src/app.js <b>now</b>."}}"#;
     const PUSH: &str = r#"{"type":"assistant","timestamp":"2026-11-03T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"p1","name":"Bash","input":{"command":"git push --force"}}]}}"#;
     const DONE: &str = r#"{"type":"assistant","timestamp":"2026-11-03T10:02:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done <script>alert(1)</script>"}]}}"#;
+    const EDIT: &str = r#"{"type":"assistant","timestamp":"2026-11-03T10:00:30.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"src/app.js","old_string":"a","new_string":"b"}}]}}"#;
+
+    #[test]
+    fn the_health_check_finds_transcripts_that_it_cannot_trust() {
+        use messages::Unhealthy;
+        let h = |text: &str, files| health(&transcript::parse(text), files);
+        // Experiment e3b: an empty transcript.
+        assert_eq!(h("", 0), Some(Unhealthy::Empty));
+        // Experiment e3: lines in a format that the engine does not know.
+        assert_eq!(
+            h(
+                "{\"event\":\"start\"}\n{\"event\":\"text\",\"body\":\"hi\"}",
+                2
+            ),
+            Some(Unhealthy::UnknownFormat)
+        );
+        assert_eq!(
+            h(&format!("not json\nnot json either\n{PROMPT}"), 0),
+            Some(Unhealthy::MostLinesBad)
+        );
+        assert_eq!(
+            h(&format!("{PROMPT}\n{DONE}"), 1),
+            Some(Unhealthy::NoAgentWork)
+        );
+        assert_eq!(h(&format!("{PROMPT}\n{DONE}"), 0), None);
+        assert_eq!(h(&format!("{PROMPT}\n{EDIT}\n{DONE}"), 1), None);
+        assert_eq!(h(&format!("{PROMPT}\n{PUSH}\n{DONE}"), 1), None);
+    }
 
     /// One test only, because it sets the data folder for the whole process.
     #[test]
@@ -459,7 +537,7 @@ mod tests {
         assert!(r.message.is_none(), "no change and no finding: no message");
 
         std::fs::write(d.join("src/app.js"), "b\n").unwrap();
-        std::fs::write(&t, format!("{PROMPT}\n{DONE}\n")).unwrap();
+        std::fs::write(&t, format!("{PROMPT}\n{EDIT}\n{DONE}\n")).unwrap();
         let r = run(&input, hook).unwrap();
         let m = r.message.unwrap();
         assert!(m.starts_with("Agentproof: no red flags found."), "{m}");

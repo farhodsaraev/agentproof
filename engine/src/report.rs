@@ -74,7 +74,6 @@ fn verdict(h: &mut String, r: &CheckResult, title: &str) {
         Verdict::DontTrust => "bad",
         Verdict::Check => "warn",
         Verdict::NoRedFlags => "ok",
-        Verdict::Safe => "ok",
         Verdict::Incomplete => "none",
     };
     let mut chips = String::new();
@@ -96,9 +95,12 @@ fn verdict(h: &mut String, r: &CheckResult, title: &str) {
     }
     let _ = write!(
         h,
-        "<section class=\"verdict {class}\"><h1>{}</h1><p>{}</p><div class=\"chips\">{chips}</div><p class=\"note\">{}</p></section>",
+        "<section class=\"verdict {class}\"><h1>{}</h1><p>{}{}</p><div class=\"chips\">{chips}</div><p class=\"note\">{}</p></section>",
         esc(&capitalize(title)),
-        messages::verdict_explanation(r.verdict),
+        messages::verdict_explanation(r.verdict, r.ai_confirms),
+        r.incomplete_reason
+            .map(|t| format!(" {t}"))
+            .unwrap_or_default(),
         match &r.ai {
             AiStatus::Done(a) if a.error.is_none() => text::RULES_AND_AI,
             _ => text::RULES_ONLY,
@@ -358,9 +360,14 @@ fn ai_claims(h: &mut String, ai: &AiStatus) {
                         ClaimVerdict::Unsupported => ("Unsupported", "medium"),
                         ClaimVerdict::Contradicted => ("Contradicted", "critical"),
                     };
+                    let found = if c.evidence_found {
+                        String::new()
+                    } else {
+                        format!(" {}", messages::EVIDENCE_NOT_FOUND)
+                    };
                     let _ = write!(
                         h,
-                        "<tr><td>{}</td><td><span class=\"chip {class}\">{label}</span></td><td>{}<div class=\"loc\">{}</div></td></tr>",
+                        "<tr><td>{}</td><td><span class=\"chip {class}\">{label}</span></td><td>{}<div class=\"loc\">{}{found}</div></td></tr>",
                         esc(&c.claim),
                         esc(&c.reason),
                         esc(&c.evidence)

@@ -169,9 +169,7 @@ pub enum Verdict {
     DontTrust,
     Check,
     NoRedFlags,
-    /// Only with the AI check: no problems, and the evidence supports every claim.
-    Safe,
-    /// A source was missing, so some checks did not run.
+    /// A source was missing, or the engine cannot trust it, so some checks did not run.
     Incomplete,
 }
 
@@ -309,22 +307,16 @@ pub fn changed_by_agent(s: &Session, path: &str) -> bool {
         })
 }
 
-#[cfg(test)]
+/// The verdict. The best verdict is "no red flags found", also when the AI check
+/// supports each claim: an opinion of a model is not a proof. A later proof run
+/// can give "safe to merge".
 pub fn verdict(findings: &[Finding], complete: bool) -> Verdict {
-    verdict_with_ai(findings, complete, false)
-}
-
-/// `ai_confirms`: the AI check ran and supported every claim of the agent.
-/// Only then can the verdict be "safe to merge". Rule checks alone never say "safe".
-pub fn verdict_with_ai(findings: &[Finding], complete: bool, ai_confirms: bool) -> Verdict {
     if findings.iter().any(|f| f.severity == Severity::Critical) {
         Verdict::DontTrust
     } else if !complete {
         Verdict::Incomplete
     } else if findings.iter().any(|f| f.severity <= Severity::Medium) {
         Verdict::Check
-    } else if ai_confirms {
-        Verdict::Safe
     } else {
         Verdict::NoRedFlags
     }

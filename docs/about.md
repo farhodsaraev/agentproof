@@ -107,15 +107,18 @@ The engine examines the rows of this table in sequence. The first row that appli
 | Verdict | JSON value | When the engine gives it |
 |---|---|---|
 | do not trust this work | `dont_trust` | At least one finding is Critical. This row comes first, so it applies also to an incomplete check. |
-| incomplete, because some checks did not run | `incomplete` | The engine cannot read the transcript file, or the project folder is not in a Git repository. |
+| incomplete, because some checks did not run | `incomplete` | The engine cannot read the transcript file, or the project folder is not in a Git repository. Or the health check cannot trust the transcript (see below). The message and the report give the reason. |
 | examine N items | `check` | At least one finding is High or Medium. N is the number of High and Medium findings. |
-| safe to merge | `safe` | The AI check ran with no error, found at least one claim, and supported each claim. |
 | no red flags found | `no_red_flags` | All other cases. Low findings can exist. |
 
-Low findings never change the verdict. Rule checks alone never give "safe to merge". For "no red flags found", the message adds "This result uses rule checks only." These are the known problems:
+Low findings never change the verdict. There is no "safe to merge" verdict now. An AI opinion is not a proof, so the best verdict is "no red flags found". Planned: a proof run can give "safe to merge" later. See [roadmap.md](roadmap.md). For "no red flags found", the message adds "This result uses rule checks only." Sometimes the AI check found evidence for each claim. Then the message says this, and it says that this is an opinion, not a proof.
 
-- **"Safe to merge" is not a promise.** The AI request sends no command output. For a test command, it sends the result that the rule checks found and the summary line. For other commands, it sends "passed" for exit code 0. Thus the AI check can still support a false claim. Also, nothing compares the evidence of the model with the transcript or the changes. Planned: the engine will show "safe to merge" only after a proof run passes. See [roadmap.md](roadmap.md).
-- **False "no red flags found".** An empty transcript, or a transcript in an unknown format, gives "no red flags found" and not "incomplete". Planned: the engine will give "incomplete" with the reason when it cannot trust the transcript. The roadmap calls this the health gate. See [roadmap.md](roadmap.md).
+**Health check.** The engine gives "incomplete" with a reason in these cases:
+
+- The transcript is empty.
+- No line of the transcript is in a known format: there is no prompt, no message of the agent and no tool call.
+- More lines are not valid JSON than lines in a known format.
+- Files changed in the session, but the transcript shows no edit and no command of the agent.
 - **Lowered findings.** The other-origin rule can make a serious finding Low, for example a deleted test file. The report then says "The rule checks found no problems", but Low findings exist.
 
 ## What you see
@@ -172,7 +175,7 @@ The AI check gives an AI opinion on each claim in the final message. The model s
 | Where the result goes | The report, the JSON file and the verdict. A message shows it only in some cases. | Only to the agent and the chat. The report, the JSON file and the verdict do not show it. |
 | Test status | The tests use only fake servers. Nobody tested it with a real API key. | Nobody tested it in Claude Code. |
 
-The API key method sends each prompt, with a maximum of 2,000 characters, and the full final message. It sends the last 60 commands, each with a maximum of 500 characters and a label such as "passed" or "failed". For a test command, the label gives the test result, the source of the result and the summary line. Only a failed command has its error text, with a maximum of 300 characters. It also sends the changes of the session files: a maximum of 20,000 characters for each file and 120,000 characters in total. The engine removes secrets from the request before it sends it. For a secret file, the request has only the path.
+The API key method sends each prompt, with a maximum of 2,000 characters, and the full final message. It sends the last 60 commands, each with a maximum of 500 characters. Each command has a label, for example "failed" or "exit code 0, the output is not shown". For a test command, the label gives the test result, the source of the result and the summary line. For the last 10 test commands, the request also has the last 1,200 characters of the output. Only a failed command has its error text, with a maximum of 300 characters. It also sends the changes of the session files: a maximum of 20,000 characters for each file and 120,000 characters in total. The engine removes secrets from the request before it sends it. For a secret file, the request has only the path.
 
 These conditions apply to the AI check of the engine:
 
@@ -180,6 +183,7 @@ These conditions apply to the AI check of the engine:
 - The engine uses a saved AI result again when the changes, the final message and the number of commands are the same as before.
 - A normal hook check starts the AI check in a separate background process, so the agent does not wait. A manual check, and a hook check in strict mode, wait for the AI check for up to 5 minutes.
 - A contradicted claim gives a High finding, `ai_contradicted`. An unsupported claim gives a Medium finding, `ai_unsupported`. A supported claim gives no finding.
+- The engine examines the evidence that the model names. A transcript line must be the line of a step of the session, for example a prompt or a command. A file must be a changed file. A line number after the file must be a changed line or a line of the file. When the engine does not find the evidence, the report says so. Then a contradicted claim gives a Medium finding, and a supported claim does not count as evidence for the claims.
 
 Known problems: the next message rarely shows the AI result. The input of the next turn is different, so the engine starts a new AI check. After the first changed file of a session, almost each turn starts a new AI check, also a turn that only answers a question. The engine also saves a failed result, so it does not try again for the same input.
 
@@ -321,15 +325,15 @@ The data goes through the files in this sequence. `main.rs` and `hook.rs` get th
 
 If the AI check is on, `ai.rs` makes the AI request, `redact.rs` removes secrets from it, and `ai.rs` reads the claims in the answer. `check.rs` makes the AI findings from these claims and gives them their severity. Last, `messages.rs` gives the text, and `report.rs` makes the HTML of the report. `check.rs` writes the JSON file through `store.rs`, and it writes the report.
 
-**Tests.** The engine has 115 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 27 assertions and a fake Anthropic server. On 4 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
+**Tests.** The engine has 119 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 27 assertions and a fake Anthropic server. On 4 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
 
 ## Principles
 
 These principles come from the first design document. The product does not fully obey some principles today. After each of these principles, a sentence that starts with "Today:" describes the difference.
 
 1. **The checker is never the agent.** Agentproof never asks the agent that wrote the code if the code is good. Rule checks need no model, and the AI check is a separate call. Today: the agent can run `agentproof check` with its Bash tool, and this run marks all findings as shown.
-2. **Facts come before opinions.** Findings from rule checks rank above AI opinions, and the report shows the source of each finding. Today: the engine sorts findings by severity only, and an AI opinion alone can give "safe to merge".
-3. **Each finding has evidence.** Each finding has a file and a line, or a transcript line. Today: each AI finding gets the line of the final message, and nothing checks the evidence of the model.
+2. **Facts come before opinions.** Findings from rule checks rank above AI opinions, and the report shows the source of each finding. Today: the engine sorts findings by severity only. An AI opinion can no longer give a better verdict than "no red flags found".
+3. **Each finding has evidence.** Each finding has a file and a line, or a transcript line. Today: each AI finding gets the line of the final message. The engine checks that the evidence of the model exists, but not that it shows the claim.
 4. **Local by default.** The only network call goes to the model that the user chose, after secret removal. There is no telemetry, no account and no server. Today: secret removal does not remove all secrets. The report footer says "It sent no data to a server" also after an AI check.
 5. **Never change the repository.** Agentproof only reads the repository, and it keeps its own files outside the repository. In the audit, `git status` of the project did not change after 10 experiments. Today: `git status` can refresh the Git index file, `.git/index`.
 6. **No result is not a pass.** When a step fails or does not run, the report says so and does not show a pass. The rule checks for test runs obey this principle: a test run with no visible result is not a pass. Today: an empty transcript gives "no red flags found", and only the JSON file shows a settings error.
@@ -345,8 +349,8 @@ The product analysis of 4 November 2026 lists 16 problems that prevent productio
 |---|---|---|---|
 | 1 | P0 | Fixed on 4 November 2026 (roadmap item A1). The rule checks for test runs now read the summary line of the output, and they know more test commands. A pipe or a run in the background cannot hide a failure that the output shows. | Done ([roadmap.md](roadmap.md)). |
 | 2 | P0 | Fixed on 4 November 2026 (roadmap item A2). A failure now counts until a later run of the same tests or more tests passes. A pass of only one file or one test gives a High finding, or a Critical finding with a claim that all tests pass. | Done ([roadmap.md](roadmap.md)). |
-| 3 | P0 | "Safe to merge" can come after test failures that the engine did not see. | Planned: the engine will show "safe to merge" only after a proof run passes ([roadmap.md](roadmap.md)). |
-| 4 | P0 | An empty transcript or a transcript in an unknown format gives "no red flags found". | Planned: the engine will give "incomplete" with the reason when it cannot trust the transcript. The roadmap calls this the health gate ([roadmap.md](roadmap.md)). |
+| 3 | P0 | Fixed on 5 November 2026 (roadmap item A3). The engine no longer gives "safe to merge". An AI opinion gives at best "no red flags found". | Done. Later, a proof run can give "safe to merge" ([roadmap.md](roadmap.md)). |
+| 4 | P0 | Fixed on 5 November 2026 (roadmap item A3). An empty transcript, or a transcript in an unknown format, gives "incomplete" with the reason. | Done ([roadmap.md](roadmap.md)). |
 | 5 | P0 | Secrets can appear in the JSON file and the report. The engine does not remove Stripe keys. | Planned: secret removal for each saved field, and more key patterns ([roadmap.md](roadmap.md)). |
 | 6 | P0 | Edits through MCP tools, or commands on a folder, count as "other origin". Thus their findings become Low. | Planned: the engine will never lower Critical, High, CI or secret findings to Low ([roadmap.md](roadmap.md)). |
 | 7 | P0 | When the agent deletes old data that Git ignores, the engine treats this as cleanup and gives no finding. | Planned: the engine will record the ignored paths at the session start ([roadmap.md](roadmap.md)). |

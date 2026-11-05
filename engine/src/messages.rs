@@ -19,14 +19,21 @@ pub struct Summary<'a> {
     pub no_start: bool,
     pub no_git: bool,
     pub no_transcript: bool,
+    /// Why the engine cannot trust the transcript or the changes, from the health check.
+    pub incomplete_reason: Option<&'a str>,
     /// The AI check runs in the background, so the report updates later.
     pub ai_running: bool,
+    /// The AI check found evidence for each claim of the agent.
+    pub ai_confirms: bool,
     pub report_path: &'a str,
 }
 
 /// The short message in Claude Code.
 pub fn summary(s: &Summary) -> String {
     let mut out = vec![verdict_text(s.verdict, s.findings)];
+    if let Some(reason) = s.incomplete_reason {
+        out.push(reason.to_string());
+    }
     if s.no_git {
         out.push(
             "This folder is not a Git repository. Thus Agentproof cannot examine the changes."
@@ -74,7 +81,11 @@ pub fn summary(s: &Summary) -> String {
         );
     }
     if s.verdict == Verdict::NoRedFlags {
-        out.push("This result uses rule checks only.".into());
+        out.push(if s.ai_confirms {
+            "The AI check found evidence for each claim. This is an opinion, not a proof.".into()
+        } else {
+            "This result uses rule checks only.".into()
+        });
     }
     out.push(format!("Report: {}", s.report_path));
     out.join(" ")
@@ -96,19 +107,48 @@ pub fn verdict_title(v: Verdict, findings: &[Finding]) -> String {
             format!("examine {}", count(n, "item", "items"))
         }
         Verdict::NoRedFlags => "no red flags found".into(),
-        Verdict::Safe => "safe to merge".into(),
         Verdict::Incomplete => "incomplete, because some checks did not run".into(),
     }
 }
 
-/// One sentence that explains the verdict, for the report.
-pub fn verdict_explanation(v: Verdict) -> &'static str {
+/// One sentence that explains the verdict, for the report. `ai_confirms`: the AI
+/// check found evidence for each claim of the agent.
+pub fn verdict_explanation(v: Verdict, ai_confirms: bool) -> &'static str {
     match v {
         Verdict::DontTrust => "Agentproof found a critical problem. Do not accept this work before you examine the critical findings.",
         Verdict::Check => "Agentproof found items that need your attention. Examine each item before you accept the work.",
+        Verdict::NoRedFlags if ai_confirms => "The rule checks found no problems, and the AI check found evidence for each claim. This is an opinion, not a proof, so examine the changes.",
         Verdict::NoRedFlags => "The rule checks found no problems. This does not prove that the work is correct, because the AI check did not confirm the claims of the agent.",
-        Verdict::Safe => "The rule checks found no problems, and the AI check found evidence for each claim of the agent. Examine the changes as usual.",
-        Verdict::Incomplete => "Agentproof could not read the transcript or the changes. Thus some checks did not run.",
+        Verdict::Incomplete => "Agentproof could not read or could not trust the transcript or the changes. Thus some checks did not run.",
+    }
+}
+
+/// Why the engine cannot trust a transcript: the result of the health check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unhealthy {
+    /// The transcript file has no lines.
+    Empty,
+    /// No line has a known format: no prompt, no message of the agent, no tool call.
+    UnknownFormat,
+    /// Most lines are not valid JSON.
+    MostLinesBad,
+    /// Files changed, but the transcript shows no edit and no command of the agent.
+    NoAgentWork,
+}
+
+/// The reason for an incomplete check, for the message and the report.
+pub fn unhealthy_text(u: Unhealthy) -> &'static str {
+    match u {
+        Unhealthy::Empty => "The transcript is empty.",
+        Unhealthy::UnknownFormat => {
+            "The transcript has no lines in a format that Agentproof knows."
+        }
+        Unhealthy::MostLinesBad => {
+            "Most lines of the transcript are not in a format that Agentproof knows."
+        }
+        Unhealthy::NoAgentWork => {
+            "Files changed, but the transcript shows no edit and no command of the agent."
+        }
     }
 }
 
@@ -138,6 +178,9 @@ fn with_location(f: &Finding) -> String {
     }
     out
 }
+
+/// The note for an AI opinion whose evidence the engine did not find.
+pub const EVIDENCE_NOT_FOUND: &str = "Agentproof did not find the evidence that the AI named.";
 
 /// The note for a sensitive file that the request named.
 pub const NAMED_IN_REQUEST: &str = "The request named this file, so this change is expected.";
@@ -550,10 +593,19 @@ pub(crate) mod tests {
             no_start: true,
             no_git: false,
             no_transcript: false,
+            incomplete_reason: None,
             ai_running: false,
+            ai_confirms: false,
             report_path: "C:/Users/x/.agentproof/p/s/report.html",
         }
     }
+
+    const UNHEALTHY: [Unhealthy; 4] = [
+        Unhealthy::Empty,
+        Unhealthy::UnknownFormat,
+        Unhealthy::MostLinesBad,
+        Unhealthy::NoAgentWork,
+    ];
 
     #[test]
     fn every_finding_text_follows_ste100_length_limits() {
@@ -588,10 +640,13 @@ pub(crate) mod tests {
             Verdict::DontTrust,
             Verdict::Check,
             Verdict::NoRedFlags,
-            Verdict::Safe,
             Verdict::Incomplete,
         ] {
-            assert_ste(verdict_explanation(v));
+            assert_ste(verdict_explanation(v, false));
+            assert_ste(verdict_explanation(v, true));
+        }
+        for u in UNHEALTHY {
+            assert_ste(unhealthy_text(u));
         }
         assert_ste(&engine_error("git diff failed"));
         assert_ste(&report_opened("C:/x/report.html"));
@@ -608,16 +663,36 @@ pub(crate) mod tests {
             Verdict::DontTrust,
             Verdict::Check,
             Verdict::NoRedFlags,
-            Verdict::Safe,
             Verdict::Incomplete,
         ] {
             assert_ste(&summary(&sample(&findings, &shown, v)));
             assert_ste(&summary(&Summary {
                 no_git: true,
                 no_transcript: true,
+                ai_confirms: true,
                 ..sample(&[], &[], v)
             }));
+            for u in UNHEALTHY {
+                assert_ste(&summary(&Summary {
+                    incomplete_reason: Some(unhealthy_text(u)),
+                    ..sample(&[], &[], v)
+                }));
+            }
         }
+    }
+
+    #[test]
+    fn an_incomplete_check_says_why() {
+        let text = summary(&Summary {
+            incomplete_reason: Some(unhealthy_text(Unhealthy::Empty)),
+            ..sample(&[], &[], Verdict::Incomplete)
+        });
+        assert!(
+            text.starts_with(
+                "Agentproof: incomplete, because some checks did not run. The transcript is empty."
+            ),
+            "{text}"
+        );
     }
 
     #[test]
@@ -682,5 +757,13 @@ pub(crate) mod tests {
         assert!(text.contains("no red flags found"));
         assert!(text.contains("rule checks only"));
         assert!(!text.to_lowercase().contains("safe"));
+        // The AI check alone never makes the verdict "safe".
+        let text = summary(&Summary {
+            ai_confirms: true,
+            ..sample(&[], &[], Verdict::NoRedFlags)
+        });
+        assert!(text.contains("no red flags found"), "{text}");
+        assert!(text.contains("not a proof"), "{text}");
+        assert!(!text.to_lowercase().contains("safe"), "{text}");
     }
 }

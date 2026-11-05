@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 5 November 2026. Status of Phase A: In progress. A1 and A2 are done, and A3 is next.
+Last update: 5 November 2026. Status of Phase A: In progress. A1, A2 and A3 are done, and A4 is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -95,7 +95,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 |---|---|---|---|---|---|
 | A1 | **Read test output** (n01 core, weeks 1 and 2). Keep the first 2 KB and the last 8 KB of the output of each test command, also in subagents. Mark piped runs "exit code hidden". Parse the summaries of pytest, jest, vitest, cargo and go. Add the test-command forms that the engine does not know: `npm run test:*`, `bun run test`, `python manage.py test`, `nx test` and others. Treat zero-test runs as "not run". Do not trust exit code 0 from a background command until its summary appears | 1, 8 | L | Experiments e1 and e7 give "do not trust this work". A "tests pass" claim after `npm run test:unit` gives no finding. No report says "the last test run passed" for a piped run. The hook check takes less than 2 s on the largest real session | Done, 4 November 2026, commit `f95d880` |
 | A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Done, 4 November 2026, commit `3dd5c19` |
-| A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Not started |
+| A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026. Not committed yet |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Not started |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Not started |
 | A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Not started |
@@ -191,6 +191,33 @@ A2 is done. The change is in commit `3dd5c19`.
 - The engine compares name patterns with special characters, and expressions, as text.
 - The other P0 blockers stay open, for example in experiments e3, e3b, e6 and e9.
 
+### A3 result (5 November 2026)
+
+A3 is done. The change is not committed yet.
+
+**What changed:**
+
+- A health check examines the transcript. It gives "incomplete" with a reason in 4 cases. The transcript is empty. No line has a known format. More lines are not valid JSON than lines in a known format. Or files changed, but the transcript shows no edit and no command of the agent.
+- The message and the report give the reason of an incomplete check, for example "The transcript is empty."
+- The engine no longer gives "safe to merge". The best verdict is "no red flags found", also when the AI check supports each claim. Then the message says that the AI check found evidence for each claim, and that this is an opinion, not a proof.
+- The AI request has the last 1,200 characters of the output of the last 10 test commands. For other commands with exit code 0, the label is "exit code 0, the output is not shown", not "passed".
+- The engine examines the evidence that the model names. A transcript line must be the line of a step of the session. A file must be a changed file, and a line number must be a changed line or a line of the file. The report marks evidence that the engine did not find.
+- A contradicted claim with evidence that the engine did not find gives a Medium finding, not a High finding.
+
+**What the tests show:**
+
+- All 119 unit and scenario tests pass, and 4 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 27 of 27.
+- Experiments e3 and e3b now give "incomplete". The other experiments give the same results as after A2.
+- A replay of the 26 local sessions gave no verdict change. No real session became "incomplete".
+- The largest session (130 MB) took 1.5 s in the replay.
+
+**Limits that stay:**
+
+- The replay uses a small test repository, so no file changed in it. Thus the replay did not test the case "files changed, but no edit and no command".
+- Nobody tested the evidence check with a real model. The tests use a fake server.
+- The engine checks that the evidence exists, but not that the evidence shows the claim.
+- A3 does not show the last change and the test result for each changed file. Section 5 of the analysis names this step, but section 7 does not put it in Phase A.
+
 ### How to do A1 and A2
 
 These details come from [section 5, item 1](product-analysis.md#the-top-10) of the analysis (the idea "Test forensics", n01).
@@ -223,7 +250,7 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 |---|---|
 | A1 | Done. See "A1 result" above |
 | A2 | Done. See "A2 result" above |
-| A3 | `check.rs` counts a check as complete when it can read the transcript file and the Git changes. Thus an empty transcript counts as complete. `ai.rs` sends "passed" with no output for exit code 0. No code compares the evidence of the AI opinions with the transcript or the diff |
+| A3 | Done. See "A3 result" above |
 | A4 | The JSON file keeps the prompts, the commands, the errors and the final message with no secret removal. `redact.rs` has no pattern for Stripe-style keys. `secret_file()` depends on the order of the areas in `sensitive_area()` |
 | A5 | `changed_by_agent()` in `checks.rs` counts only edits by file tools, paths or file names in commands, and a list of broad command words. Edits through MCP tools do not count |
 | A6 | `paths_at_start()` in `changes.rs` reads only the start commit and the changed files. Thus the cleanup exception can cover an ignored folder that existed at the start. The start hook has a timeout of 15 s |
@@ -438,8 +465,8 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 |---|---|---|---|
 | 1 | P0 | The main rule check trusts the exit code and does not know common test commands | A1 (done), A7 |
 | 2 | P0 | A narrower run that passes clears an earlier full failure | A2 (done), A7 |
-| 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3, then L1 |
-| 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3, A7 |
+| 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3 (done), then L1 |
+| 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 |
 | 5 | P0 | The JSON file and the report keep secrets | A4, A7 |
 | 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5, A7 |
 | 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6, A7 |
@@ -573,3 +600,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 4 November 2026: the documents and A1 are in commit `f95d880`.
 - 4 November 2026: A2 is done. The section "A2 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A2 is in commit `3dd5c19`.
+- 5 November 2026: A3 is done. The section "A3 result" gives the changes, the test results and the limits that stay.
