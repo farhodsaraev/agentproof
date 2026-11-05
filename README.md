@@ -25,9 +25,26 @@ Agentproof is a plugin for Claude Code. It examines the work of an AI coding age
 - If nothing changed since the last check, Agentproof shows nothing.
 - Agentproof does not change the repository. It keeps its own files in `~/.agentproof`.
 
-## Install the plugin on your computer
+## Install the plugin
 
 You must have Git. On Windows, you must have Git Bash, because the plugin hooks use it.
+
+The branch `release` has the plugin with ready engine files for Windows (x64), macOS (Intel and Apple silicon) and Linux (x64 and ARM64). Agentproof downloads nothing when it operates.
+
+1. In Claude Code, add the branch `release` as a plugin marketplace:
+   ```
+   /plugin marketplace add farhodsaraev/agentproof#release
+   ```
+   The repository is private for now. Thus Git on your computer must have access to it, for example after `gh auth login` and `gh auth setup-git`.
+2. Install the plugin:
+   ```
+   /plugin install agentproof@agentproof
+   ```
+3. Start a new session. Agentproof starts to operate automatically.
+
+Known problem: the engine files have no signature yet. On Windows, Smart App Control can block an engine file without a signature, and you cannot let it run. Then Agentproof cannot operate on that computer. Signatures are planned (roadmap item N11).
+
+## Install the plugin from your own build
 
 1. Build the engine (see "Development").
 2. In Claude Code, add this folder as a plugin marketplace:
@@ -118,7 +135,21 @@ Development occurs in a Docker container. You do not install Rust on your comput
    sh scripts/build-plugin.sh
    ```
 
-The container cannot build the macOS version yet.
+The container cannot build the macOS version. The release workflow builds it.
+
+## Make a release
+
+The workflow `.github/workflows/release.yml` builds the engine for 5 targets on GitHub. It puts the engine files and their checksums into the plugin. Then it tests the plugin with a fixture session on Windows, macOS (ARM64 and x86_64) and Linux. Only for a version tag, and only when all tests pass, it puts the plugin on the branch `release` and makes a GitHub release.
+
+1. Set the same version in `engine/Cargo.toml` and `plugin/.claude-plugin/plugin.json`. Claude Code gives an update to users only when the version changes.
+2. Commit and push the change.
+3. Push a tag with this version:
+   ```
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+To test a build with no release, start the workflow manually on GitHub (Actions, release, Run workflow).
 
 ## Tests
 
@@ -131,7 +162,10 @@ The container cannot build the macOS version yet.
    bash tests/e2e/hooks.sh
    bash tests/e2e/ai.sh
    ```
-   `hooks.sh` runs the full hook sequence in a real Git repository. `ai.sh` tests the AI check with a fake Anthropic server on your computer. It sends no data to the internet.
+. The release test of a plugin folder with engine files and a `SHA256SUMS` file (the release workflow runs it):
+   ```
+   bash tests/release/smoke.sh plugin
+   ```
 
 ## Folders
 
@@ -143,6 +177,8 @@ The container cannot build the macOS version yet.
 | `.claude-plugin/` | The local plugin marketplace. |
 | `scripts/` | Build scripts. |
 | `tests/e2e/` | End-to-end tests of the plugin. |
+| `tests/release/` | The release test of the plugin. |
+| `.github/workflows/` | The release workflow. |
 | `.devcontainer/` | The development container. |
 | `docs/` | The documentation: the product, the roadmap and the analysis. |
 

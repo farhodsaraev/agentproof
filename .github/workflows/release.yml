@@ -1,0 +1,177 @@
+# Release of the Agentproof plugin (roadmap item B1).
+#
+# 1. Build the engine for Windows, macOS and Linux.
+# 2. Put the engine files and their checksums into the plugin folder.
+# 3. Test the plugin on Windows, macOS and Linux with a fixture session.
+# 4. Only for a version tag, and only when all tests pass: put the plugin with
+#    the engine files on the branch `release`, and make a GitHub release.
+#
+# Users install from the branch `release`, so no download occurs at run time.
+# A manual start (workflow_dispatch) does steps 1 to 3 only.
+#
+# Make a release:
+#   1. Set the same version in engine/Cargo.toml and plugin/.claude-plugin/plugin.json.
+#   2. Commit, then push a tag with this version:  git tag v0.2.0 && git push origin v0.2.0
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: "1.99"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag, Cargo.toml and plugin.json have the same version
+        shell: bash
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/Cargo.toml | head -1)
+          plugin_version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugin/.claude-plugin/plugin.json | head -1)
+          echo "Cargo.toml: $cargo_version, plugin.json: $plugin_version, ref: $GITHUB_REF_NAME"
+          [ "$cargo_version" = "$plugin_version" ] || { echo "::error::Cargo.toml and plugin.json have different versions"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$cargo_version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME is not v$cargo_version"; exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Ubuntu 22.04 has an older glibc, so the build also runs on older Linux systems.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, exe: agentproof }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, exe: agentproof }
+          - { target: x86_64-apple-darwin, os: macos-15, exe: agentproof }
+          - { target: aarch64-apple-darwin, os: macos-15, exe: agentproof }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025, exe: agentproof.exe }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target ${{ matrix.target }}
+          rustup default "$RUST_VERSION"
+      - name: Install the ARM64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} --manifest-path engine/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.target }}
+          path: engine/target/${{ matrix.target }}/release/${{ matrix.exe }}
+          if-no-files-found: error
+
+  assemble:
+    name: Put the engine into the plugin
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: engine-*
+          path: dist
+      - name: Copy the engine files and write the checksums
+        run: |
+          rm -rf plugin/engine
+          for d in dist/engine-*; do
+            target="${d#dist/engine-}"
+            mkdir -p "plugin/engine/$target"
+            cp "$d"/* "plugin/engine/$target/"
+          done
+          chmod +x plugin/engine/*/agentproof*
+          (cd plugin/engine && find . -type f -name 'agentproof*' | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS)
+          cat plugin/engine/SHA256SUMS
+          [ "$(wc -l < plugin/engine/SHA256SUMS)" -eq 5 ] || { echo "::error::Not 5 engine files"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: plugin
+          include-hidden-files: true
+          if-no-files-found: error
+
+  test:
+    name: Test on ${{ matrix.os }}
+    needs: assemble
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is ARM64. macos-15-intel is x86_64.
+        os: [windows-2025, macos-15, macos-15-intel, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin
+          path: plugin
+      - name: Test the plugin with a fixture session
+        shell: bash
+        run: |
+          # An artifact does not keep the file modes.
+          chmod +x plugin/bin/agentproof plugin/engine/*/agentproof*
+          bash tests/release/smoke.sh plugin
+
+  publish:
+    name: Publish the release
+    needs: test
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin
+          path: plugin
+      - name: Put the plugin with the engine files on the branch release
+        run: |
+          chmod +x plugin/bin/agentproof plugin/engine/*/agentproof*
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The engine files are in .gitignore on the main branch.
+          git add -f plugin/engine
+          tree=$(git write-tree)
+          parents="-p $GITHUB_SHA"
+          if git fetch -q origin release 2>/dev/null; then
+            parents="-p FETCH_HEAD $parents"
+          fi
+          commit=$(git commit-tree "$tree" $parents -m "Release $GITHUB_REF_NAME")
+          git push origin "$commit:refs/heads/release"
+          echo "The branch release is now at $commit"
+      - name: Make the GitHub release with the engine files and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir out
+          for d in plugin/engine/*/; do
+            target=$(basename "$d")
+            tar -czf "out/agentproof-$GITHUB_REF_NAME-$target.tar.gz" -C "$d" .
+          done
+          cp plugin/engine/SHA256SUMS out/SHA256SUMS-engine.txt
+          (cd out && sha256sum *.tar.gz > SHA256SUMS-archives.txt)
+          gh release create "$GITHUB_REF_NAME" out/* --title "Agentproof $GITHUB_REF_NAME" \
+            --notes "Install from the branch release. See the README. The engine files have no signature yet (roadmap item N11)."

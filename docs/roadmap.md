@@ -381,7 +381,7 @@ Phase B makes the install work, adds the license and CI, measures the precision 
 
 | ID | Work | Blockers | Effort | Done when | Status |
 |---|---|---|---|---|---|
-| B1 | **Binaries** (weeks 5 and 6). Use cargo-dist for Windows, Linux and macOS (x64 and arm64), with checksums. Put the binaries in the plugin release, so that no download occurs at run time. Document the macOS quarantine step and the Windows SmartScreen warning until the binaries have signatures (N11). Make shell, PowerShell, Homebrew tap and MSI installers with cargo-dist (section 9) | 9 | M | A GitHub Actions macOS runner and a Windows runner install from the release and give a verdict on a fixture session. The maintainer has no Mac, so the macOS runner is the test | Not started |
+| B1 | **Binaries** (weeks 5 and 6). Use cargo-dist for Windows, Linux and macOS (x64 and arm64), with checksums. Put the binaries in the plugin release, so that no download occurs at run time. Document the macOS quarantine step and the Windows SmartScreen warning until the binaries have signatures (N11). Make shell, PowerShell, Homebrew tap and MSI installers with cargo-dist (section 9) | 9 | M | A GitHub Actions macOS runner and a Windows runner install from the release and give a verdict on a fixture session. The maintainer has no Mac, so the macOS runner is the test | In progress |
 | B2 | **Windows launcher** (week 5). Add a PowerShell launcher next to the Bash launcher. Claude Code runs hook commands in Git Bash on Windows, and in PowerShell when the computer has no Git Bash. Make the hook command start the correct launcher in each shell. As an alternative, use the exec form, which starts a real `.exe` file with no shell | 9 | S | The end-to-end script passes on a Windows runner with no Git Bash on `PATH` | Not started |
 | B3 | **License, CI, security policy** (week 6). Add `LICENSE-MIT`, `LICENSE-APACHE` and `SECURITY.md`. Run `cargo test`, `clippy` and the end-to-end scripts in CI | 10 | S | CI passes on 3 systems for each pull request | Not started |
 | B4 | **Safe AI defaults** (week 6). Never wait for the AI check in a hook, also in strict mode. Do not put agentproof-ai in the default install. Remove the false README claim about the next message | 11, 12 | S | No hook waits for an AI call. The README has no false AI claim | Not started |
@@ -394,6 +394,13 @@ Phase B makes the install work, adds the license and CI, measures the precision 
 
 ### More details for Phase B
 
+- **B1 progress (5 November 2026).** Not committed yet.
+  - The maintainer chose these points. Users install from a branch `release` that has the engine files. GitHub Actions builds and tests on Windows, macOS and Linux. Signatures stay in N11.
+  - The workflow `.github/workflows/release.yml` builds 5 targets: Windows x64 (MSVC), macOS x64 and ARM64, and Linux x64 and ARM64. It writes `SHA256SUMS`. Then the script `tests/release/smoke.sh` tests the plugin with experiment e1 on Windows, macOS ARM64, macOS x64 and Linux. Only a version tag publishes, and only after all tests pass.
+  - The launcher uses the MSVC build on Windows, and the GNU build of the Docker container when the MSVC build is missing.
+  - The release test passed on Windows with a local build. The workflow did not run on GitHub yet.
+  - Change to the plan: the workflow does not use cargo-dist, and it makes no shell, PowerShell, Homebrew or MSI installer. The plugin needs only the engine files on the branch `release`. These installers are for use outside Claude Code. The maintainer decides if they stay in B1.
+  - Files from a Git clone have no download mark. Thus macOS does not add the quarantine mark, and Windows SmartScreen does not show a warning. Windows Smart App Control still can block a file without a signature, with no way for the user to let it run. The README tells this.
 - **B3** (section 11). Keep sample transcripts from each Claude Code version. Run them in CI.
 - **B4.** Note: today agentproof-ai is not in the default install. It is a separate plugin in the marketplace file, and the README gives it as an optional install step. Sections 4 and 7 say "remove it from the default install". They do not say if B4 removes the marketplace entry or only changes the README.
 - **B6** ([section 9](product-analysis.md#9-community-and-growth-plan)):
