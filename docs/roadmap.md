@@ -98,7 +98,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026, commit `947d40e` |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026, commit `9947e13` |
 | A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026, commit `6d8f738` |
-| A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Done, 5 November 2026. Not committed yet |
+| A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Done, 5 November 2026, commit `c342315` |
 | A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
 
 ### A1 result (4 November 2026)
@@ -272,7 +272,7 @@ A5 is done. The change is in commit `6d8f738`.
 
 ### A6 result (5 November 2026)
 
-A6 is done. It is not committed yet.
+A6 is done. The change is in commit `c342315`.
 
 **What changed:**
 
@@ -690,3 +690,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A5 is done. The section "A5 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A5 is in commit `6d8f738`.
 - 5 November 2026: A6 is done. The section "A6 result" gives the changes, the test results and the limits that stay.
+- 5 November 2026: A6 is in commit `c342315`.
