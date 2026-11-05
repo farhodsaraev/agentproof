@@ -185,9 +185,9 @@ pub const EVIDENCE_NOT_FOUND: &str = "Agentproof did not find the evidence that 
 /// The note for a sensitive file that the request named.
 pub const NAMED_IN_REQUEST: &str = "The request named this file, so this change is expected.";
 
-/// The note for a finding on a file that the agent did not touch.
+/// The note for a finding on a file that the transcript does not show as a change of the agent.
 pub const OTHER_ORIGIN: &str =
-    "The agent did not touch this file, so a different session or a person possibly made this change.";
+    "The transcript does not show that the agent changed this file. A different session or a person possibly made this change.";
 
 /// The location of a finding, without punctuation.
 pub fn location_text(f: &Finding) -> Option<String> {
@@ -236,6 +236,9 @@ pub fn finding_text(rule: &Rule) -> String {
         Rule::PassClaimWithoutTests { phrase } => {
             format!("The agent said \"{phrase}\", but it did not run the tests.")
         }
+        Rule::PassClaimAfterTestsRemoved { phrase } => format!(
+            "The agent removed or weakened tests. Then it said \"{phrase}\", but no test run passed."
+        ),
         Rule::PassClaimUnverified { phrase, reason } => format!(
             "The agent said \"{phrase}\", but no test run passed. {}",
             unverified_text(*reason)
@@ -432,6 +435,9 @@ pub(crate) mod tests {
             Rule::TestsFailedAtEnd,
             Rule::NarrowPassAfterFailure,
             Rule::PassClaimWithoutTests {
+                phrase: "all tests pass".into(),
+            },
+            Rule::PassClaimAfterTestsRemoved {
                 phrase: "all tests pass".into(),
             },
             Rule::PassClaimUnverified {

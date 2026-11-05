@@ -75,6 +75,7 @@ The rule checks are in [`engine/src/checks.rs`](../engine/src/checks.rs). They n
 | `narrow_pass_after_failure` | High | A test run failed. A later run passed, but it ran only a part of the same tests, for example one test file. The final message does not say that all tests pass. | Transcript |
 | `pass_claim_without_tests` | High | The final message says that the tests pass, but the session has no test command. | Transcript |
 | `pass_claim_unverified` | High | The final message says that the tests pass, but no test run passed. For example, the last run found no tests, or a pipe hid its result. | Transcript |
+| `pass_claim_after_tests_removed` | Critical | The agent deleted, removed, skipped or focused tests. Then the final message says that the tests pass, but no test run passed. This finding replaces `pass_claim_without_tests` and `pass_claim_unverified`. | Transcript and changes |
 | `dangerous_command` | Critical | A recursive delete: `rm` with both `-r` and `-f`, `Remove-Item -Recurse`, `rd /s` or `rmdir /s`. A force push, a hard reset or `git clean -f`. A downloaded script that goes into a shell through a pipe. `sudo` as the first word of a command part. Other commands that delete files, for example `rm -r` or `del /s`, give no finding. | Transcript |
 | `dependencies_changed` | Medium | A changed dependency manifest such as `package.json`, or a changed lock file when its manifest did not change. | Changes |
 | `sensitive_file` | Medium | A changed file for authentication, payments, database migrations, CI, secrets or agent configuration. | Changes |
@@ -87,7 +88,7 @@ The rule checks are in [`engine/src/checks.rs`](../engine/src/checks.rs). They n
 
 These are the main exceptions:
 
-- **Other origin.** A finding with a file but no transcript line becomes Low when the agent did not touch the file. The agent touches a file when a file tool such as `Edit` or `Write` changes it, or when a command names it. After a command with a broad word such as `install` or `format`, the engine counts all files as touched.
+- **Other origin.** A finding with a file but no transcript line gets a note when the transcript does not show that the agent changed the file. The agent changes a file when a file tool such as `Edit` or `Write` changes it. An MCP tool with a word such as "write" or "replace" in its name also counts. A command that names the file or one of its folders also counts, for example `git rm -r tests`. After a command with a broad word such as `install` or `format`, the engine counts all files as changed. Only a Medium finding outside CI and secrets becomes Low. Critical and High findings, and CI and secret findings, keep their severity, because the parser can miss an edit of the agent.
 - **Named in a prompt.** A `sensitive_file` finding becomes Low when a prompt names the exact path of the file, and the file exists.
 - **Deletes.** A recursive delete of build, cache or temporary folders is not dangerous, for example `node_modules`, `target` or `/tmp/`. A recursive delete also gives no finding when Git did not know each folder at the start point, and the session used the folder before. Thus the engine gives no finding when the agent deletes old data that Git ignores. See row 7 of [Known limits today](#known-limits-today).
 - **Tests.** A test file is in a folder such as `tests`, or it has a name such as `login.test.js`. A test command is a command in which one part starts with a known test runner. Examples are `cargo test`, `npm run test:unit`, `pytest` and `docker compose run web pytest`. A failed test run does not count when a later run of the same tests or more tests passed. The later run must have the same test runner.
@@ -327,7 +328,7 @@ The data goes through the files in this sequence. `main.rs` and `hook.rs` get th
 
 If the AI check is on, `ai.rs` makes the AI request, `redact.rs` removes secrets from it, and `ai.rs` reads the claims in the answer. `check.rs` makes the AI findings from these claims and gives them their severity. Last, `messages.rs` gives the text, and `report.rs` makes the HTML of the report. `check.rs` writes the JSON file through `store.rs`, and it writes the report.
 
-**Tests.** The engine has 124 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 27 assertions and a fake Anthropic server. On 4 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
+**Tests.** The engine has 128 unit and scenario tests. Two end-to-end scripts test the plugin on Windows: `tests/e2e/hooks.sh` with 38 assertions, and `tests/e2e/ai.sh` with 28 assertions and a fake Anthropic server. On 5 November 2026, all tests passed. There is no CI yet. [README.md](../README.md) tells you how to build the engine in the Docker container and run the tests.
 
 ## Principles
 
@@ -354,7 +355,7 @@ The product analysis of 4 November 2026 lists 16 problems that prevent productio
 | 3 | P0 | Fixed on 5 November 2026 (roadmap item A3). The engine no longer gives "safe to merge". An AI opinion gives at best "no red flags found". | Done. Later, a proof run can give "safe to merge" ([roadmap.md](roadmap.md)). |
 | 4 | P0 | Fixed on 5 November 2026 (roadmap item A3). An empty transcript, or a transcript in an unknown format, gives "incomplete" with the reason. | Done ([roadmap.md](roadmap.md)). |
 | 5 | P0 | Fixed on 5 November 2026 (roadmap item A4). The engine removes secrets from each text of each saved file, and it knows more key formats, for example Stripe keys. | Done ([roadmap.md](roadmap.md)). |
-| 6 | P0 | Edits through MCP tools, or commands on a folder, count as "other origin". Thus their findings become Low. | Planned: the engine will never lower Critical, High, CI or secret findings to Low ([roadmap.md](roadmap.md)). |
+| 6 | P0 | Fixed on 5 November 2026 (roadmap item A5). Edits through MCP tools and commands on a folder count as changes of the agent. The engine never lowers Critical, High, CI or secret findings to Low. | Done ([roadmap.md](roadmap.md)). |
 | 7 | P0 | When the agent deletes old data that Git ignores, the engine treats this as cleanup and gives no finding. | Planned: the engine will record the ignored paths at the session start ([roadmap.md](roadmap.md)). |
 | 8 | P0 | Fixed on 4 November 2026 (roadmap item A1). The engine now keeps the results of subagent commands, and all rule checks for commands examine them. The transcripts of workflow subagents are not read yet (see the list below). | Done, except workflow subagents ([roadmap.md](roadmap.md)). |
 | 9 | P1 | Nobody can install Agentproof without a manual build. The repository has no engine build, there is no macOS build, and Windows needs Git Bash. | Planned: engine builds in the plugin release, and a PowerShell launcher ([roadmap.md](roadmap.md)). |
@@ -425,7 +426,7 @@ Section 2 of [product-analysis.md](product-analysis.md) has the full market map.
 | AI check | An optional call to an AI model that compares each claim with the evidence. Its findings are opinions. |
 | finding | One problem that a rule check or the AI check found, with a severity, a location and evidence. |
 | severity | The level of a finding: Critical, High, Medium or Low. |
-| other origin | A mark on a finding for a file that the agent did not touch. The severity is then Low. |
+| other origin | A mark on a finding for a file that the transcript does not show as a change of the agent. Only a Medium finding outside CI and secrets then becomes Low. |
 | verdict | The result of a check, which the engine calculates from the findings. There are 5 verdicts. |
 | message | The short text that Claude Code shows after a check. A hook message lists only new findings. |
 | report | The HTML file `report.html` with all findings and their evidence. |

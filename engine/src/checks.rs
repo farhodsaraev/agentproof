@@ -48,6 +48,11 @@ pub enum Rule {
         phrase: String,
         reason: Unverified,
     },
+    /// The agent removed or weakened tests, and then said that the tests pass
+    /// with no passing run.
+    PassClaimAfterTestsRemoved {
+        phrase: String,
+    },
     DangerousCommand {
         kind: Danger,
     },
@@ -129,8 +134,9 @@ pub struct Finding {
     pub evidence: String,
     /// The ASD-STE100 text for users. `check.rs` fills it.
     pub text: String,
-    /// The agent did not touch this file, so a different session or a person
-    /// possibly made the change. The severity is then Low.
+    /// The transcript does not show that the agent changed this file, so a
+    /// different session or a person possibly made the change. A Medium finding
+    /// outside CI and secrets is then Low.
     #[serde(default)]
     pub other_origin: bool,
     /// The request named this file, so the change is expected. The severity is then Low.
@@ -204,7 +210,9 @@ pub fn evaluate(input: &Input) -> Vec<Finding> {
         outside_request(s, input.diffs, root, &mut out);
     }
     // Git does not know who made a change. A change to a file that the agent
-    // did not touch can come from a different session or from a person.
+    // did not touch can come from a different session or from a person. The
+    // finding gets a note. Only a Medium finding outside CI and secrets becomes
+    // Low: the parser can miss an edit of the agent, so a serious finding stays.
     if let Some(s) = input.session {
         for f in &mut out {
             let other = f.transcript_line.is_none()
@@ -212,10 +220,13 @@ pub fn evaluate(input: &Input) -> Vec<Finding> {
                     .as_deref()
                     .is_some_and(|file| !changed_by_agent(s, file));
             if other {
-                f.severity = Severity::Low;
                 f.other_origin = true;
+                if f.severity == Severity::Medium && !keeps_severity(&f.rule) {
+                    f.severity = Severity::Low;
+                }
             }
         }
+        pass_claim_after_tests_removed(&mut out);
     }
     // A recursive delete of a folder that the session made is cleanup, not a danger.
     let recursive_delete = Rule::DangerousCommand {
@@ -250,6 +261,46 @@ pub fn evaluate(input: &Input) -> Vec<Finding> {
     }
     out.sort_by_key(|f| f.severity);
     out
+}
+
+/// Findings that keep their severity when the engine cannot see that the agent
+/// made the change: CI configuration and secrets.
+fn keeps_severity(rule: &Rule) -> bool {
+    matches!(
+        rule,
+        Rule::SensitiveFile {
+            area: Area::Ci | Area::Secrets
+        }
+    )
+}
+
+/// The agent removed or weakened tests, and then said that the tests pass with no
+/// passing run. This is the main case of a false pass, so the claim becomes Critical.
+fn pass_claim_after_tests_removed(out: &mut [Finding]) {
+    let weakened = out.iter().any(|f| {
+        !f.other_origin
+            && matches!(
+                f.rule,
+                Rule::TestFileDeleted
+                    | Rule::TestsRemoved { .. }
+                    | Rule::AssertionsRemoved { .. }
+                    | Rule::TestSkipped { .. }
+                    | Rule::TestFocused { .. }
+            )
+    });
+    if !weakened {
+        return;
+    }
+    for f in out.iter_mut() {
+        let phrase = match &f.rule {
+            Rule::PassClaimWithoutTests { phrase } | Rule::PassClaimUnverified { phrase, .. } => {
+                phrase.clone()
+            }
+            _ => continue,
+        };
+        f.rule = Rule::PassClaimAfterTestsRemoved { phrase };
+        f.severity = Severity::Critical;
+    }
 }
 
 /// Commands that can change files without naming them, for example a package
@@ -296,6 +347,12 @@ pub fn changed_by_agent(s: &Session, path: &str) -> bool {
         let e = e.trim_start_matches("./");
         e == rel || e.ends_with(&format!("/{rel}"))
     });
+    // The folders that hold the file, for example `src` and `src/auth`.
+    let folders: Vec<&str> = rel
+        .match_indices('/')
+        .map(|(i, _)| &rel[..i])
+        .filter(|f| !f.is_empty())
+        .collect();
     // The commands of subagents count too.
     let commands = s.commands.iter().map(|c| c.command.as_str());
     edited
@@ -304,6 +361,22 @@ pub fn changed_by_agent(s: &Session, path: &str) -> bool {
             c.contains(&rel)
                 || (name.len() >= 3 && c.contains(&name))
                 || BROAD_COMMANDS.iter().any(|b| c.contains(b))
+                || names_folder(&c, &folders)
+        })
+}
+
+/// True if a word of the command is one of the folders, for example
+/// `git rm -r tests` for the file `tests/math.test.js`. A command on a folder
+/// can change each file in it.
+fn names_folder(command: &str, folders: &[&str]) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '&' | '|'))
+        .map(|w| w.trim_start_matches("./").trim_end_matches('/'))
+        .filter(|w| !w.is_empty() && !w.starts_with('-') && *w != "." && *w != "..")
+        .any(|w| {
+            folders
+                .iter()
+                .any(|f| w == *f || w.ends_with(&format!("/{f}")))
         })
 }
 
@@ -2438,6 +2511,108 @@ mod other_origin {
         };
         assert!(changed_by_agent(&s, "src/lib.rs"));
         assert!(!changed_by_agent(&s, "lib.rs/other.rs"));
+    }
+
+    fn deleted(path: &str) -> FileDiff {
+        FileDiff {
+            path: path.into(),
+            status: 'D',
+            added: Vec::new(),
+            removed: vec![(1, "test('adds', () => {});".into())],
+        }
+    }
+
+    fn run(s: &Session, d: &[FileDiff]) -> Vec<Finding> {
+        evaluate(&Input {
+            session: Some(s),
+            diffs: d,
+            root: None,
+            start: None,
+        })
+    }
+
+    fn by_file<'a>(f: &'a [Finding], path: &str) -> &'a Finding {
+        f.iter().find(|f| f.file.as_deref() == Some(path)).unwrap()
+    }
+
+    // Roadmap item A5: the parser can miss an edit, so a serious finding stays.
+    #[test]
+    fn serious_findings_keep_their_severity_with_a_note() {
+        let s = Session {
+            commands: vec![cmd("cargo build")],
+            ..Session::default()
+        };
+        let d = [
+            deleted("tests/math.test.js"),
+            changed(".github/workflows/ci.yml", &["name: ci"]),
+            changed("src/auth/login.js", &["return true;"]),
+            changed("config/.env.production", &["X=1"]),
+        ];
+        let f = run(&s, &d);
+        for (path, severity) in [
+            ("tests/math.test.js", Severity::High),
+            (".github/workflows/ci.yml", Severity::Medium),
+            ("config/.env.production", Severity::Medium),
+            ("src/auth/login.js", Severity::Low),
+        ] {
+            let x = by_file(&f, path);
+            assert_eq!(x.severity, severity, "{path}");
+            assert!(x.other_origin, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_command_on_a_folder_changes_each_file_in_it() {
+        let s = Session {
+            commands: vec![cmd("git rm -r -q tests"), cmd("rm -rf \"./build/\"")],
+            ..Session::default()
+        };
+        assert!(changed_by_agent(&s, "tests/math.test.js"));
+        assert!(changed_by_agent(&s, "tests/unit/a.test.js"));
+        assert!(changed_by_agent(&s, "build/out.js"));
+        assert!(!changed_by_agent(&s, "src/tests.js"));
+        assert!(!changed_by_agent(&s, "tests-old/a.js"));
+        let s = Session {
+            commands: vec![cmd("git rm -r /c/repo/src/auth")],
+            ..Session::default()
+        };
+        assert!(changed_by_agent(&s, "src/auth/login.js"));
+        assert!(!changed_by_agent(&s, "src/billing.js"));
+        // A flag or the current folder is not a folder name.
+        let s = Session {
+            commands: vec![cmd("ls . -la")],
+            ..Session::default()
+        };
+        assert!(!changed_by_agent(&s, "src/auth/login.js"));
+    }
+
+    #[test]
+    fn a_pass_claim_after_the_agent_deleted_tests_is_critical() {
+        let mut s = Session {
+            commands: vec![cmd("git rm -r -q tests")],
+            final_message: Some("The build is green now. All tests pass.".into()),
+            final_message_line: Some(9),
+            ..Session::default()
+        };
+        let d = [deleted("tests/math.test.js")];
+        let f = run(&s, &d);
+        let claim = f
+            .iter()
+            .find(|f| matches!(f.rule, Rule::PassClaimAfterTestsRemoved { .. }))
+            .expect("the claim becomes Critical");
+        assert_eq!(claim.severity, Severity::Critical);
+        assert_eq!(verdict(&f, true), Verdict::DontTrust);
+        // A test file that the transcript does not show as a change of the agent
+        // keeps the claim High.
+        s.commands = vec![cmd("cargo build")];
+        let f = run(&s, &d);
+        assert!(f
+            .iter()
+            .any(|f| matches!(f.rule, Rule::PassClaimWithoutTests { .. })
+                && f.severity == Severity::High));
+        assert!(!f
+            .iter()
+            .any(|f| matches!(f.rule, Rule::PassClaimAfterTestsRemoved { .. })));
     }
 }
 

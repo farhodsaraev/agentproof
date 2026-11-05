@@ -34,7 +34,7 @@ printf 'DB_PASSWORD=hunter2hunter2\n' > "$R/.env"
 
 echo "== 1. Manual check waits for the AI check"
 out=$("$L" check --cwd "$R" --session a1 --transcript "$T")
-has "$out" 'AI opinion: the evidence does not agree with the claim "All tests pass"' && ok "AI finding in the message" || bad "AI finding missing" "$out"
+has "$out" "The report has all" && ok "manual check done" || bad "manual check message" "$out"
 REQ="$S/srv/request1.txt"
 [ -f "$REQ" ] && ok "request reached the server" || bad "no request"
 grep -qi "^x-api-key: e2e-test-key-123" "$REQ" && ok "API key sent in the header" || bad "API key header"
@@ -48,6 +48,8 @@ grep -q 'hunter2' "$REQ" && bad ".env content was sent" || ok ".env content was 
 grep -q 'e2e-test-key-123' <(tail -n +2 "$REQ" | sed -n '/^$/,$p') && bad "API key in the request body" || ok "API key not in the request body"
 D="$AGENTPROOF_HOME/$(ls "$AGENTPROOF_HOME" | grep -v config)/a1"
 H="$D/report.html"
+# The manual check waited for the AI check, so the saved result has the AI finding.
+grep -q "AI opinion: the evidence does not agree with the claim" "$D/check.json" && ok "AI finding in the saved result" || bad "AI finding missing"
 grep -q "Contradicted" "$H" && grep -q "Supported" "$H" && ok "report shows AI verdicts" || bad "report AI table"
 grep -q "Agentproof removed" "$H" && ok "report counts removed secrets" || bad "report removed-secrets note"
 grep -q -E "hunter2|PLANTEDSECRET" "$H" && bad "report shows a secret" || ok "report shows no planted secret"

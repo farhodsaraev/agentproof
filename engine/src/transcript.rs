@@ -180,6 +180,39 @@ fn add_subagents(s: &mut Session, path: &Path) {
 }
 
 const FILE_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+/// Words in the name of an MCP tool that changes a file.
+const MCP_EDIT_WORDS: &[&str] = &[
+    "write", "edit", "replace", "create", "delete", "remove", "move", "rename", "patch", "apply",
+    "insert", "save", "update", "append",
+];
+
+/// The path of a file that an MCP tool changes, for example
+/// `mcp__ide__write_file` with `{"path": "src/a.js"}`. A tool that only reads
+/// does not count.
+fn mcp_edit_path<'a>(name: &str, input: Option<&'a Value>) -> Option<&'a str> {
+    let tool = name.strip_prefix("mcp__")?.to_lowercase();
+    let tool = tool.rsplit("__").next().unwrap_or(&tool);
+    // `write_file`, `write-file` and `writeFile` all count.
+    let changes = tool
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| MCP_EDIT_WORDS.iter().any(|e| w.starts_with(e)));
+    if !changes {
+        return None;
+    }
+    let input = input?;
+    [
+        "file_path",
+        "filePath",
+        "path",
+        "file",
+        "filename",
+        "target_file",
+    ]
+    .iter()
+    .find_map(|k| input.get(*k).and_then(Value::as_str))
+    .filter(|p| !p.is_empty())
+}
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
 
 /// What the parser knows about a test command while it reads the transcript.
@@ -526,6 +559,17 @@ pub fn parse(raw: &str) -> Session {
                                 if !s.files_edited.iter().any(|f| f == p) {
                                     s.files_edited.push(p.to_string());
                                 }
+                            }
+                        } else if let Some(p) = mcp_edit_path(name, input) {
+                            push_event(
+                                &mut s,
+                                line_no,
+                                at,
+                                EventKind::Edit,
+                                &format!("{name} {p}"),
+                            );
+                            if !s.files_edited.iter().any(|f| f == p) {
+                                s.files_edited.push(p.to_string());
                             }
                         } else {
                             if AGENT_TOOLS.contains(&name) {
@@ -875,6 +919,37 @@ mod tests {
         ] {
             assert!(!is_viewer(command), "{command}");
         }
+    }
+
+    // Roadmap item A5: experiment e4 changes files through MCP tools.
+    #[test]
+    fn counts_files_that_mcp_tools_change() {
+        let line = |id: &str, name: &str, input: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-11-03T10:00:02.000Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#
+            )
+        };
+        let raw = [
+            line(
+                "m1",
+                "mcp__ide__replace_in_file",
+                r#"{"path":"src/auth/login.js"}"#,
+            ),
+            line(
+                "m2",
+                "mcp__fs__writeFile",
+                r#"{"filePath":".github/workflows/ci.yml"}"#,
+            ),
+            line("m3", "mcp__ide__read_file", r#"{"path":"src/read.js"}"#),
+            line("m4", "mcp__github__create_issue", r#"{"title":"x"}"#),
+        ]
+        .join("\n");
+        let s = parse(&raw);
+        assert_eq!(
+            s.files_edited,
+            ["src/auth/login.js", ".github/workflows/ci.yml"]
+        );
+        assert!(s.events.iter().any(|e| e.kind == EventKind::Edit));
     }
 
     #[test]

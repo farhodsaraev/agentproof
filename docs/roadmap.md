@@ -1,6 +1,6 @@
 # Agentproof roadmap
 
-Last update: 5 November 2026. Status of Phase A: In progress. A1 to A4 are done, and A5 is next.
+Last update: 5 November 2026. Status of Phase A: In progress. A1 to A5 are done, and A6 is next.
 
 The maintainer and Claude Code built milestones 1 to 4 of Agentproof on 3 November 2026. The product analysis of 4 November 2026 found that Agentproof is not ready for production use. Its main check gives false passes, and nobody can install it without a manual build. Phase A fixes the 8 P0 blockers in weeks 1 to 4, each with a regression test. The maintainer confirmed the start of Phase A on 4 November 2026. A1, the fix for the false pass, is done on the same day (see "A1 result").
 
@@ -97,7 +97,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Done, 4 November 2026, commit `3dd5c19` |
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026, commit `947d40e` |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026, commit `9947e13` |
-| A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Not started |
+| A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026. Not committed yet |
 | A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Not started |
 | A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
 
@@ -244,6 +244,32 @@ A4 is done. The change is in commit `9947e13`.
 - The transcript file of Claude Code keeps all secrets.
 - A faster secret check (one pre-check for all patterns) is not in A4. Windows Smart App Control blocked the build with this change, so nobody tested it on Windows.
 
+### A5 result (5 November 2026)
+
+A5 is done. It is not committed yet.
+
+**What changed:**
+
+- Sometimes the transcript does not show that the agent changed a file. A Critical or High finding on such a file keeps its severity. A CI or secret finding also keeps its severity. Each of these findings gets a note. Only a Medium finding outside CI and secrets becomes Low.
+- A command that names a folder counts as a change to each file in that folder, for example `git rm -r tests`.
+- An MCP tool with a word such as "write", "edit" or "replace" in its name counts as an edit of the file that it names. An MCP tool that only reads does not count.
+- New rule `pass_claim_after_tests_removed` (Critical). The agent deleted, removed, skipped or focused tests. Then it said that the tests pass, but no test run passed. Without this rule, experiment e4 gives only "check this work", so the "done when" text needs it.
+- The note on these findings is now clear: "The transcript does not show that the agent changed this file."
+
+**What the tests show:**
+
+- All 128 unit and scenario tests pass, and 4 of them are new. The script `tests/e2e/hooks.sh` passes 38 of 38, and `tests/e2e/ai.sh` passes 28 of 28.
+- In `tests/e2e/ai.sh`, the changed `.env` file is now Medium, so it pushes the AI finding out of the short message. The test now finds the AI finding in the saved result. It has 1 more assertion.
+- Experiment e4 gives "do not trust this work". Experiment e6 now gives "check this work", because its changed secret file stays Medium. Experiment e3 still gives "incomplete", but its deleted test file is now High. The other experiments give the same results as after A4.
+- A replay of the 26 local sessions with the A4 build and the A5 build gave the same verdicts and findings for each session.
+
+**Limits that stay:**
+
+- The replay uses a small test repository, so no file changed in it. Thus the replay did not test the new attribution on real sessions.
+- The words in MCP tool names are a guess. An MCP tool with an unusual name is still not counted.
+- A command with a broad word such as `install` still counts all files as changed.
+- The new Critical rule needs a pass claim with no passing run. An agent that deletes a failing test and then runs the other tests with a pass is not Critical. Then the deleted test file is High.
+
 ### How to do A1 and A2
 
 These details come from [section 5, item 1](product-analysis.md#the-top-10) of the analysis (the idea "Test forensics", n01).
@@ -278,7 +304,7 @@ A code review on 4 November 2026 found these facts. Read them when an item start
 | A2 | Done. See "A2 result" above |
 | A3 | Done. See "A3 result" above |
 | A4 | Done. See "A4 result" above |
-| A5 | `changed_by_agent()` in `checks.rs` counts only edits by file tools, paths or file names in commands, and a list of broad command words. Edits through MCP tools do not count |
+| A5 | Done. See "A5 result" above |
 | A6 | `paths_at_start()` in `changes.rs` reads only the start commit and the changed files. Thus the cleanup exception can cover an ignored folder that existed at the start. The start hook has a timeout of 15 s |
 | A7 | `engine/tests/data/` has 3 sample transcripts. The end-to-end scripts run only on Windows. The experiment files are not in the repository. Make them again from appendix section B |
 
@@ -494,7 +520,7 @@ Each blocker of [section 4](product-analysis.md#4-what-blocks-production-readine
 | 3 | P0 | "Safe to merge" can come after test failures that the engine did not see | A3 (done), then L1 |
 | 4 | P0 | An unknown or empty transcript gives "no red flags found" | A3 (done), A7 |
 | 5 | P0 | The JSON file and the report keep secrets | A4 (done), A7 |
-| 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5, A7 |
+| 6 | P0 | Edits through MCP tools or folder commands get the severity Low as "other origin" | A5 (done), A7 |
 | 7 | P0 | A delete of old, ignored data counts as "cleanup" | A6, A7 |
 | 8 | P0 | Test runs in subagents have no results | A1 (done), A7 |
 | 9 | P1 | Nobody can install Agentproof without a manual build | B1, B2 |
@@ -630,3 +656,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A3 is in commit `947d40e`.
 - 5 November 2026: A4 is done. The section "A4 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A4 is in commit `9947e13`.
+- 5 November 2026: A5 is done. The section "A5 result" gives the changes, the test results and the limits that stay.
