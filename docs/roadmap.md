@@ -97,7 +97,7 @@ Phase A fixes only the P0 blockers, each with a regression test. Nobody else use
 | A2 | **Scope of runs** (n01, week 2). A later run that passes clears a failure only when it ran the same tests or more tests | 2 | S | Experiment e2 gives "do not trust this work" | Done, 4 November 2026, commit `3dd5c19` |
 | A3 | **Honest verdict** (n04, verdict part only, weeks 2 and 3). Add the health gate. Hide "safe to merge". Send the end of the output to the AI check. Check the evidence of each AI opinion | 3, 4 | M | Experiments e3 and e3b give "incomplete". The engine never gives "safe to merge" from the AI check alone | Done, 5 November 2026, commit `947d40e` |
 | A4 | **Secrets** (week 3). Remove secrets from each saved field. Add key patterns. Fix the order of the secret-file check | 5 | S | Experiment e6 finds none of its fake keys in the JSON file, the report or the AI request | Done, 5 November 2026, commit `9947e13` |
-| A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026. Not committed yet |
+| A5 | **Attribution** (week 3). Do not lower Critical, High, CI or secret findings to Low as "other origin". Treat commands on folders as edits to the files in them | 6 | S | Experiment e4 gives "do not trust this work" | Done, 5 November 2026, commit `6d8f738` |
 | A6 | **Ignored data** (week 4). At session start, list ignored and untracked paths with `git ls-files --others --directory`, so that each ignored folder gives one line. Stop the list at 300 ms or at 50,000 entries. Mark a stopped list "partial". Remove the cleanup exception for old data | 7 | M | Experiment e9 gives a Critical finding for the deleted database. The start hook adds less than 300 ms on the largest of the 3 test projects | Not started |
 | A7 | **Regression suite** (week 4). Add each audit experiment (e1 to e9, e3b) as a fixture test | All blockers with an experiment | S | Each experiment runs as a test, and all tests pass | Not started |
 
@@ -246,7 +246,7 @@ A4 is done. The change is in commit `9947e13`.
 
 ### A5 result (5 November 2026)
 
-A5 is done. It is not committed yet.
+A5 is done. The change is in commit `6d8f738`.
 
 **What changed:**
 
@@ -657,3 +657,4 @@ These are the 8 risks in [section 11 of the analysis](product-analysis.md#11-ris
 - 5 November 2026: A4 is done. The section "A4 result" gives the changes, the test results and the limits that stay.
 - 5 November 2026: A4 is in commit `9947e13`.
 - 5 November 2026: A5 is done. The section "A5 result" gives the changes, the test results and the limits that stay.
+- 5 November 2026: A5 is in commit `6d8f738`.
