@@ -675,6 +675,7 @@ Note: section 3 of the analysis gives 90% or more as the precision target for mo
 | 3 November 2026 | The engine sends plain HTTP requests to the AI provider, because Rust has no official Claude SDK |
 | 3 November 2026 | The free AI check uses the Claude plan of the user through the agentproof-ai agent hook. The engine does not start `claude -p` before Anthropic gives written permission |
 | Not recorded | The GitHub repository is private for now. It becomes public at the soft launch (B10) |
+| 26 November 2026 | The maintainer made the GitHub repository public before the soft launch. The release branch and release v0.1.0 are public too |
 | Not recorded | The plugin manifests give the license "MIT OR Apache-2.0". The license files are not in the repository yet (B3) |
 | 4 November 2026 | The product is not ready for production use. The analysis recommends Phase A first |
 | 4 November 2026 | The maintainer confirmed the start of Phase A, after the documents in this folder are complete |

@@ -35,7 +35,6 @@ The branch `release` has the plugin with ready engine files for Windows (x64), m
    ```
    /plugin marketplace add farhodsaraev/agentproof#release
    ```
-   The repository is private for now. Thus Git on your computer must have access to it, for example after `gh auth login` and `gh auth setup-git`.
 2. Install the plugin:
    ```
    /plugin install agentproof@agentproof
